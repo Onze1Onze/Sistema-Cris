@@ -31,6 +31,7 @@ import {
   DEFAULT_INITIATIVE_SCENE,
   INITIATIVE_SCENE_KEY,
   INITIATIVE_TOKEN_KEY,
+  LEGACY_INITIATIVE_SCENE_KEY,
   advanceInitiativeTurn,
   buildInitiativeEntries,
   createInitiativeRollSnapshot,
@@ -573,7 +574,8 @@ function renderInitiativePanel(state: AppState): string {
     const roll = data.roll
       ? `${data.roll.dice.length}d20 [${data.roll.dice.join(" · ")}] · ${data.roll.keep === "lowest" ? "MENOR" : "MAIOR"} ${data.roll.selected} ${data.roll.bonus >= 0 ? "+" : ""}${data.roll.bonus} = ${data.roll.total}`
       : data.initiative !== null ? `RESULTADO LEGADO ${data.initiative} · ROLE NOVAMENTE` : "TESTE DE INICIATIVA PENDENTE";
-    const portraitUrl = entry.members[0]?.type === "IMAGE" ? entry.members[0].image?.url : undefined;
+    const firstMember = entry.members[0];
+    const portraitUrl = firstMember?.type === "IMAGE" ? firstMember.image?.url : undefined;
     const portraitMarkup = portraitUrl && /^https?:\/\//i.test(portraitUrl)
       ? `<img class="initiative-portrait" src="${escapeHtml(portraitUrl)}" alt="" loading="lazy">`
       : `<span class="initiative-portrait fallback">${escapeHtml((data.displayName || entry.name).slice(0, 2).toLocaleUpperCase("pt-BR"))}</span>`;
@@ -796,7 +798,7 @@ export class CrisApp {
         this.state.sessionEvents = value.events;
         if (this.state.activeTab === "history" || this.state.mode === "master") this.render();
       }
-      this.state.initiativeScene = normalizeInitiativeScene(metadata[INITIATIVE_SCENE_KEY]);
+      this.state.initiativeScene = normalizeInitiativeScene(metadata[INITIATIVE_SCENE_KEY] ?? metadata[LEGACY_INITIATIVE_SCENE_KEY]);
       if (this.state.mode === "initiative") void this.refreshInitiativeData();
     });
     this.unsubscribeBroadcast = OBR.broadcast.onMessage(ROLL_CHANNEL, (event) => {
@@ -849,7 +851,7 @@ export class CrisApp {
       OBR.scene.getMetadata(),
     ]);
     this.state.initiativeEntries = buildInitiativeEntries(sceneItems, (item) => this.resolveInitiativeSheet(item));
-    this.state.initiativeScene = normalizeInitiativeScene(metadata[INITIATIVE_SCENE_KEY]);
+    this.state.initiativeScene = normalizeInitiativeScene(metadata[INITIATIVE_SCENE_KEY] ?? metadata[LEGACY_INITIATIVE_SCENE_KEY]);
     if (this.state.mode === "initiative") this.render();
   }
 
