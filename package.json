@@ -1,9 +1,9 @@
 {
-  "name": "owlbear-conexao-cris",
+  "name": "sistema-cris",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Extensão vertical do Owlbear Rodeo para importar e exibir fichas públicas do C.R.I.S.",
+  "description": "Sistema-Cris — extensão do Owlbear Rodeo para importar e exibir fichas públicas do C.R.I.S.",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
