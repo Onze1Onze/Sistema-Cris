@@ -37,6 +37,23 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm test
       - run: npm run build
+      - name: Set extension manifest version
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const path = 'dist/manifest.json';
+          const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
+          manifest.version = '0.2.1';
+          manifest.name = 'Conexão com CRIS';
+          manifest.description = 'Importe fichas públicas do C.R.I.S. e visualize os dados do agente em um dossiê no Owlbear Rodeo.';
+          manifest.action = {
+            ...manifest.action,
+            title: 'Conexão com CRIS',
+            width: 390,
+            height: 720
+          };
+          fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\\n');
+          NODE
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
