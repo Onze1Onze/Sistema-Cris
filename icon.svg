@@ -1,7 +1,46 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="12" fill="#111113"/>
-  <path d="M18 12h28v40H18z" fill="none" stroke="#b91f2b" stroke-width="3"/>
-  <path d="M24 21h16M24 28h16M24 35h10" stroke="#f1eee9" stroke-width="2.5" stroke-linecap="square"/>
-  <path d="M39 41l4 4 8-10" fill="none" stroke="#b91f2b" stroke-width="3" stroke-linecap="square" stroke-linejoin="miter"/>
-  <path d="M10 17h4m36 30h4" stroke="#b91f2b" stroke-width="2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Conexão com CRIS</title>
+  <desc id="desc">Dossiê de personagem com retrato e selo de investigação paranormal.</desc>
+  <defs>
+    <linearGradient id="bg" x1="12" y1="8" x2="116" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#29272d"/>
+      <stop offset="1" stop-color="#101114"/>
+    </linearGradient>
+    <linearGradient id="red" x1="30" y1="20" x2="100" y2="112" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#bd3443"/>
+      <stop offset="1" stop-color="#741b2b"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="35" y1="26" x2="91" y2="103" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f4eee8"/>
+      <stop offset="1" stop-color="#c8c0ba"/>
+    </linearGradient>
+    <filter id="shadow" x="12" y="10" width="108" height="112" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+  </defs>
+
+  <rect x="3" y="3" width="122" height="122" rx="27" fill="url(#bg)"/>
+  <rect x="3.75" y="3.75" width="120.5" height="120.5" rx="26.25" stroke="#ffffff" stroke-opacity=".12" stroke-width="1.5"/>
+
+  <path d="M28 35a7 7 0 0 1 7-7h39l23 23v56a8 8 0 0 1-8 8H35a7 7 0 0 1-7-7V35Z" fill="#000" opacity=".38" filter="url(#shadow)"/>
+  <path d="M28 34a7 7 0 0 1 7-7h39l23 23v56a8 8 0 0 1-8 8H35a7 7 0 0 1-7-7V34Z" fill="url(#paper)" stroke="#fff8f1" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M74 27v16a7 7 0 0 0 7 7h16" fill="#b8b0aa" stroke="#9f9791" stroke-width="1.5" stroke-linejoin="round"/>
+
+  <path d="M35 39h36" stroke="url(#red)" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="43" cy="64" r="13.5" fill="#25242a" stroke="#9f2738" stroke-width="2.5"/>
+  <path d="M35.5 75.5c1.6-5.2 4.5-7.8 8-7.8s6.4 2.6 8 7.8" fill="#d8d0c9"/>
+  <path d="M38.5 62.5c0-3.1 1.9-5.7 5-5.7s5 2.6 5 5.7c0 3-1.8 5.2-5 5.2s-5-2.2-5-5.2Z" fill="#eee8e2"/>
+
+  <path d="M62 59h23" stroke="#767077" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M62 68h17" stroke="#a29a95" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M35 88h49" stroke="#aaa19b" stroke-width="2" stroke-linecap="round"/>
+  <path d="M35 96h32" stroke="#aaa19b" stroke-width="2" stroke-linecap="round"/>
+
+  <circle cx="91" cy="91" r="17" fill="#241b20" stroke="#d34b58" stroke-width="2.5"/>
+  <circle cx="91" cy="91" r="12.4" fill="url(#red)"/>
+  <path d="M81.5 91s3.5-5 9.5-5 9.5 5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="#fff0e9" stroke-width="1.8" stroke-linejoin="round"/>
+  <circle cx="91" cy="91" r="2.2" fill="#fff0e9"/>
+  <path d="M91 78.8v2.3M91 100.9v2.3M78.8 91h2.3M100.9 91h2.3" stroke="#f7d9d3" stroke-width="1.3" stroke-linecap="round"/>
+
+  <path d="M17 49v-8M17 49h8M111 79v8M111 87h-8" stroke="#bc3646" stroke-opacity=".65" stroke-width="1.6" stroke-linecap="round"/>
 </svg>
