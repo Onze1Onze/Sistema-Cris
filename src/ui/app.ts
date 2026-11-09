@@ -30,7 +30,7 @@ export class CharacterApp {
 
   async init(): Promise<void> {
     if (OBR.isAvailable) {
-      await OBR.onReady();
+      await new Promise<void>((resolve) => { OBR.onReady(() => resolve()); });
       try { this.isGM = (await OBR.player.getRole()) === "GM"; } catch { this.isGM = false; }
       await registerTokenContextMenu();
     }
