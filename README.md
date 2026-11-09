@@ -2,7 +2,7 @@
 
 Extensão para importar fichas públicas do C.R.I.S., apresentar o dossiê completo em um painel vertical do Owlbear Rodeo e vincular o registro a um Token da cena.
 
-**Versão da interface:** 0.2.0
+**Versão publicada do manifesto:** 0.2.1
 
 ## Instalar no Owlbear
 
@@ -43,7 +43,7 @@ Para preparar o projeto localmente, extraia os módulos acima na raiz do reposit
 
 Depois execute `npm install`, `npm test` e `npm run build`. A build é gerada em `dist/`.
 
-O CI e o GitHub Pages executam essa preparação automaticamente antes de testar e publicar a extensão.
+O CI e o deploy por Actions executam essa preparação automaticamente. Como este repositório também tem a publicação clássica do Pages por branch habilitada, o workflow `.github/workflows/pages-root.yml` sincroniza os mesmos arquivos estáticos (`manifest.json`, `index.html`, `icon.svg`, `assets/` e `.nojekyll`) na raiz do branch `main`. Isso evita que o deploy automático do Jekyll substitua o manifesto por uma página vazia ou 404.
 
 ## Persistência e permissões
 
