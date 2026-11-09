@@ -266,7 +266,6 @@ function renderCombat(sheet: CharacterSheet): string {
   return `<section class="section-block"><div class="section-title"><span>04</span><h2>PARÂMETROS DE COMBATE</h2><i></i></div>
     <div class="combat-grid">${fields.filter(([, value]) => value !== undefined).map(([label, value]) => `<div class="combat-stat"><small>${label}</small><strong>${display(value)}</strong></div>`).join("") || `<p class="muted-note">Parâmetros de combate não informados.</p>`}</div>
     ${combat?.resistances?.length ? `<div class="note-card"><div class="micro-label">RESISTÊNCIAS</div><p>${combat.resistances.map(escapeHtml).join(" · ")}</p></div>` : ""}
-    <div class="combat-action-locked"><strong>AÇÕES RÁPIDAS</strong><p>Dano, cura e perda de SAN ainda não podem ser enviados ao C.R.I.S. por falta de uma API de escrita autorizada. Os recursos permanecem somente leitura.</p><button class="button secondary full" disabled title="Aguardando mecanismo oficial de escrita do C.R.I.S.">APLICAR DANO / CURA — INDISPONÍVEL</button></div>
     </section>
     <section class="section-block"><div class="section-title"><span>05</span><h2>CONDIÇÕES ATUAIS</h2><i></i></div>${renderConditions(sheet)}</section>
     <section class="section-block"><div class="section-title"><span>06</span><h2>ARMAS E ATAQUES</h2><i></i></div>
@@ -433,7 +432,6 @@ function renderLinkForm(state: AppState): string {
   return `<form id="connect-form" class="connect-form">
     <label class="field-label" for="cris-url">LINK PÚBLICO DA FICHA</label>
     <div class="input-row"><input id="cris-url" type="url" required autocomplete="url" placeholder="https://crisordemparanormal.com/agente/..." value="${escapeHtml(existingUrl)}"><button class="button primary" type="submit">${state.mode === "bind" ? "VINCULAR E CARREGAR" : "CONECTAR FICHA"}</button></div>
-    <p class="helper-text">Ao conectar, a extensão busca automaticamente os dados públicos da ficha e preenche o dossiê. Nenhum JSON manual é necessário.</p>
     ${state.mode !== "library" ? `<label class="toggle-row"><span><strong>Compartilhar com os jogadores</strong><small>Desativado por padrão. Só compartilhe se a mesa puder ver os dados.</small></span><input id="share-toggle" type="checkbox" ${state.shareWithPlayers ? "checked" : ""}><i></i></label>` : ""}
   </form>`;
 }
@@ -655,11 +653,6 @@ function renderInitiativePanel(state: AppState): string {
 }
 
 function renderApp(state: AppState): string {
-  const title = state.mode === "library" ? "ARQUIVO DA SALA"
-    : state.mode === "bind" ? "VINCULAR TOKEN"
-    : state.mode === "master" ? "PAINEL DO MESTRE"
-    : state.mode === "initiative" ? "PROTOCOLO DE COMBATE"
-    : "DOSSIÊ DO AGENTE";
   const body = state.mode === "initiative"
     ? renderInitiativePanel(state)
     : state.mode === "library"
@@ -667,8 +660,8 @@ function renderApp(state: AppState): string {
       : state.mode === "master"
         ? renderMasterPanel(state)
         : state.sheet
-        ? `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title} ${state.token ? `// ${escapeHtml(state.token.name ?? "TOKEN")}` : ""}</div><h1>Ficha do Personagem</h1><p>Registro de campo associado ao C.R.I.S.</p></section>${renderNavigation(state.activeTab, state.role)}<main class="sheet-content">${renderSheetContent(state)}</main>`
-        : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title}</div><h1>Vincular ficha ao Token</h1><p>${escapeHtml(state.token?.name ?? "Token selecionado")}</p></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
+        ? `<div class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button></div>${renderNavigation(state.activeTab, state.role)}<main class="sheet-content">${renderSheetContent(state)}</main>`
+        : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><h1>Vincular ficha ao Token</h1></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
   return `<div class="app-shell"><main class="content">${renderSyncBanner(state)}${body}${state.mode === "token" || state.mode === "master" ? renderRollFeed(state) : ""}${renderToast(state.toast)}</main>${renderRollDialog(state)}</div>`;
 }
 
@@ -1526,14 +1519,9 @@ export class CrisApp {
       }
 
       this.state.lastSyncAt = timestamp;
-      if (manual) {
-        this.toast(
-          reconciliation.changed
-            ? "Ficha consultada e atualizada com os dados confirmados pelo C.R.I.S."
-            : "Consulta concluída. Nenhum campo mudou no C.R.I.S.",
-          "success",
-        );
-      } else if (reconciliation.changed || previousStatus !== this.state.syncStatus) {
+      if (manual && reconciliation.changed) {
+        this.toast("Ficha atualizada.", "success");
+      } else if (manual || reconciliation.changed || previousStatus !== this.state.syncStatus) {
         this.render();
       }
     } catch (error) {
