@@ -89,13 +89,50 @@ O comportamento padrão é restritivo:
 
 A metadata sincronizada da sala é visível a participantes com acesso à cena. Não compartilhe fichas com informação que deva permanecer secreta. O botão de compartilhar é uma autorização explícita do Mestre, não um cofre de dados.
 
-## Cache e atualização
+## Sincronização remota e edição bidirecional
 
-- O cache local usa o armazenamento do navegador e evita perder a última cópia quando o Firestore está indisponível.
-- Ao abrir um Token vinculado como Mestre, a extensão busca uma versão atualizada.
-- O botão **ATUALIZAR FICHA AGORA** executa uma nova leitura.
-- A extensão não faz polling contínuo nem consulta a cada frame.
-- A extensão não altera PV, PE, SAN, itens ou qualquer outro dado no C.R.I.S. A sincronização é somente de leitura.
+### C.R.I.S. → Owlbear
+
+O C.R.I.S. não ofereceu documentação oficial de WebSocket, webhook ou feed de eventos consultável por extensões externas. Por isso, não inventamos um canal em tempo real. A versão 1.2 usa polling de leitura a cada 15 segundos enquanto o dossiê estiver aberto, o Mestre estiver visualizando a extensão e a página estiver visível. Ao ocultar/fechar a extensão, o polling é interrompido.
+
+- O Mestre consulta a origem remota e é responsável por propagar os snapshots autorizados. Na aba **ARQUIVO → DIAGNÓSTICO C.R.I.S.**, a frequência pode ser ajustada para 10, 15 ou 30 segundos; o padrão é 15 segundos e a preferência fica salva neste navegador.
+- Jogadores não consultam a origem em segundo plano: recebem atualizações por `OBR.scene.items.onChange` quando o Mestre atualiza metadata do Token.
+- A consulta é ignorada quando nenhum campo realmente mudou; `updatedAt` isolado não gera um falso delta.
+- Quando a leitura remota muda um recurso, o histórico local registra campo, valor anterior, valor novo, horário e origem `C.R.I.S.`.
+- O botão **ATUALIZAR FICHA AGORA** força uma consulta imediata.
+- A extensão para o polling quando a página fica oculta ou quando o dossiê é fechado.
+- Se a origem ficar indisponível, a última cópia confirmada continua visível e o estado muda para offline/erro.
+
+### Owlbear → C.R.I.S. — escrita ainda indisponível
+
+PV, PE e SAN permanecem em **somente leitura** nesta versão. Não foi localizada uma API oficial/documentada do C.R.I.S. para atualizar esses campos, nem um fluxo público de autorização para uma extensão externa.
+
+O endpoint REST do Firestore aceita operações de atualização no produto Firebase, mas isso não autoriza por si só a escrita em uma ficha do C.R.I.S. A documentação do Firebase explica que as solicitações REST precisam de um Firebase ID token ou credencial OAuth apropriada, e que as regras de segurança do Firestore decidem se a operação é permitida. A chave pública Firebase apenas identifica o projeto; não concede permissão. Consulte [autenticação da API REST do Firestore](https://firebase.google.com/docs/firestore/use-rest-api) e [regras de segurança](https://firebase.google.com/docs/firestore/security/rules-conditions).
+
+Existe código comunitário que tenta usar `PATCH` diretamente no Firestore, mas o próprio repositório mantém o acionador da funcionalidade desativado (`IntencaoAssassina = false`) e não comprova uma operação de escrita autorizada e bem-sucedida. Veja [o código experimental do overlay comunitário](https://github.com/VizzottoNCF/CRIS-Overlay/blob/main/stats.js). Portanto, esse trecho não é tratado como contrato oficial de escrita.
+
+Consequências:
+- Não há botões de dano, cura, perda de SAN ou alteração manual que aparentem salvar no C.R.I.S.
+- Não há fila offline de alterações, desfazer remoto ou edição local pendente.
+- A extensão não muda PV/PE/SAN no cache para fingir que o servidor confirmou.
+- Se o C.R.I.S. publicar futuramente uma API de escrita ou um fluxo OAuth/Firebase autorizado para terceiros, a camada `crisWrite.ts` poderá receber um adaptador verificado. Até lá, todas as capacidades estão marcadas explicitamente como indisponíveis.
+
+### Conflitos
+
+A camada `crisConflict.ts` já contém uma pré-verificação genérica de concorrência para uma futura operação de escrita: compara o valor-base, o valor proposto e o valor remoto atual. Se o C.R.I.S. tiver mudado desde a leitura-base, o resultado será conflito; a nova versão remota não pode ser sobrescrita silenciosamente. Essa rotina não envia dados e não habilita edição.
+
+### Diagnóstico visível
+
+A aba **ARQUIVO → DIAGNÓSTICO C.R.I.S.** mostra a capacidade de leitura, a escrita não disponível, a ausência de eventos oficiais documentados e o intervalo de polling. PV, PE e SAN exibem a marca **SOMENTE LEITURA · C.R.I.S.** até que uma escrita autorizada seja implementada.
+
+## Cache
+
+- O cache local usa o armazenamento do navegador e preserva a última cópia quando o Firestore está indisponível.
+- A origem remota continua sendo a referência: quando o dossiê está aberto, o Mestre consulta novamente o C.R.I.S. periodicamente.
+- A metadata dos Tokens recebe snapshots apenas quando o Mestre autorizou o compartilhamento.
+- Atualizações de jogadores são aplicadas ao vivo quando a metadata do Token muda.
+- A sincronização não consulta a cada frame e não faz polling quando a extensão está oculta.
+
 
 ## Desenvolvimento local
 
@@ -123,6 +160,10 @@ Manifesto publicado: `https://onze1onze.github.io/Sistema-Cris/manifest.json`.
 
 - `src/cris/crisClient.ts`: valida link, consulta o documento Firestore e trata erros de rede.
 - `src/cris/crisParser.ts`: decodifica o formato tipado do Firestore e normaliza a ficha.
+- `src/cris/crisSync.ts`: compara snapshots remotos, detecta deltas e registra mudanças de recursos.
+- `src/cris/crisEvents.ts`: declara os transportes remotos documentados e configura polling conservador.
+- `src/cris/crisWrite.ts`: matriz explícita de capacidades de escrita; PV, PE e SAN ficam bloqueados até haver autorização verificável.
+- `src/cris/crisConflict.ts`: pré-verificação de conflitos para uma possível integração de escrita futura.
 - `src/cris/crisTypes.ts`: tipos dos dados exibidos.
 - `src/owlbear/`: integração SDK, metadata, menu contextual e vínculo com Tokens.
 - `src/storage/`: cache local.

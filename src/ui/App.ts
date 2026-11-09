@@ -1,4 +1,7 @@
 import { connectCrisLink } from "../cris/crisClient";
+import { CRIS_EVENT_CAPABILITIES } from "../cris/crisEvents";
+import { CRIS_WRITE_CAPABILITIES } from "../cris/crisWrite";
+import { diffResourceValues, isCrisNetworkFailure, reconcileRemoteSheet, type CrisSyncState, type ResourceDelta } from "../cris/crisSync";
 import type { CharacterSheet, CrisSheetReference, ResourceKey, TokenBinding } from "../cris/crisTypes";
 import { persistence } from "../storage/persistence";
 import OBR, { type SceneItem } from "../owlbear/obr";
@@ -15,6 +18,7 @@ import {
   getTokenById,
   unbindToken,
   updateTokenSnapshot,
+  syncSharedSnapshotsForSheet,
   unbindAllTokensForSheet,
 } from "../owlbear/tokenBinding";
 
@@ -22,6 +26,11 @@ const root = document.querySelector<HTMLDivElement>("#app");
 const PAGES_BASE = "/Sistema-Cris/";
 
 type ViewTab = "overview" | "combat" | "skills" | "gear" | "settings";
+
+interface SyncHistoryEntry extends ResourceDelta {
+  source: "C.R.I.S.";
+  at: number;
+}
 
 interface AppState {
   role: "GM" | "PLAYER";
@@ -34,6 +43,10 @@ interface AppState {
   sheet?: CharacterSheet;
   activeTab: ViewTab;
   shareWithPlayers: boolean;
+  syncStatus: CrisSyncState;
+  lastSyncAt?: number;
+  syncHistory: SyncHistoryEntry[];
+  pollIntervalMs: number;
   toast?: { message: string; kind: "success" | "warning" | "error" | "info" };
   busy: boolean;
 }
@@ -48,6 +61,25 @@ function display(value: unknown, empty = "—"): string {
   return value === undefined || value === null || value === "" ? empty : escapeHtml(value);
 }
 
+const SYNC_INTERVAL_KEY = "com.onze1onze.sistema-cris/sync-interval";
+const ALLOWED_SYNC_INTERVALS = [10_000, 15_000, 30_000] as const;
+
+function readSyncInterval(): number {
+  try {
+    const value = Number(localStorage.getItem(SYNC_INTERVAL_KEY));
+    return ALLOWED_SYNC_INTERVALS.includes(value as (typeof ALLOWED_SYNC_INTERVALS)[number])
+      ? value
+      : CRIS_EVENT_CAPABILITIES.pollingIntervalMs;
+  } catch {
+    return CRIS_EVENT_CAPABILITIES.pollingIntervalMs;
+  }
+}
+
+function saveSyncInterval(value: number): void {
+  if (!ALLOWED_SYNC_INTERVALS.includes(value as (typeof ALLOWED_SYNC_INTERVALS)[number])) return;
+  try { localStorage.setItem(SYNC_INTERVAL_KEY, String(value)); } catch { /* configuração opcional */ }
+}
+
 function resourceLabel(key: ResourceKey): string {
   return ({ pv: "PONTOS DE VIDA", pe: "PONTOS DE ESFORÇO", san: "SANIDADE" })[key];
 }
@@ -58,6 +90,7 @@ function resourceCard(key: ResourceKey, current: number, max: number): string {
   return `<article class="resource-card">
     <div class="resource-head"><span>${resourceLabel(key)}</span><strong>${escapeHtml(current)} <i>/</i> ${escapeHtml(max)}</strong></div>
     <div class="resource-track"><span class="${barColor}" style="width:${percentage}%"></span></div>
+    <small class="resource-readonly">SOMENTE LEITURA · C.R.I.S.</small>
   </article>`;
 }
 
@@ -71,6 +104,24 @@ function portrait(sheet: CharacterSheet, compact = false): string {
 function renderToast(toast?: AppState["toast"]): string {
   if (!toast) return "";
   return `<div class="toast ${toast.kind}" role="status">${escapeHtml(toast.message)}</div>`;
+}
+
+function renderSyncBanner(state: AppState): string {
+  if (state.mode === "library" || !state.reference) return "";
+  const labels: Record<CrisSyncState, string> = {
+    SYNCED: "SINCRONIZADO",
+    SYNCING: "CONSULTANDO C.R.I.S.",
+    REMOTE_CHANGE: "ALTERAÇÃO RECEBIDA DO C.R.I.S.",
+    OFFLINE: "C.R.I.S. INDISPONÍVEL",
+    ERROR: "FALHA NA SINCRONIZAÇÃO",
+  };
+  const last = state.lastSyncAt
+    ? new Date(state.lastSyncAt).toLocaleTimeString("pt-BR")
+    : "AGUARDANDO PRIMEIRA LEITURA";
+  return `<div class="sync-banner ${state.syncStatus.toLowerCase()}" role="status">
+    <div><span class="sync-led"></span><strong>${labels[state.syncStatus]}</strong></div>
+    <small>ÚLTIMA LEITURA ${escapeHtml(last)} · ESCRITA NÃO DISPONÍVEL</small>
+  </div>`;
 }
 
 function renderHeader(state: AppState): string {
@@ -175,22 +226,45 @@ function renderSettings(state: AppState): string {
   const sheet = state.sheet;
   const reference = state.reference;
   const url = reference?.url ?? state.binding?.sourceUrl;
-  return `<section class="section-block"><div class="section-title"><span>09</span><h2>FONTE DOS DADOS</h2><i></i></div>
-    <div class="source-box"><div class="source-status"><span class="status-light"></span><strong>LEITURA AUTOMÁTICA DO C.R.I.S.</strong></div>
+  const history = state.syncHistory.length
+    ? state.syncHistory.slice(0, 12).map((entry) => `<div class="history-row"><span>${resourceLabel(entry.resource)}</span><strong>${entry.previous} → ${entry.current}</strong><small>${new Date(entry.at).toLocaleTimeString("pt-BR")} · ${entry.source}</small></div>`).join("")
+    : `<p class="muted-note">Nenhuma alteração remota de recursos foi detectada nesta sessão.</p>`;
+  return `<section class="section-block"><div class="section-title"><span>09</span><h2>DIAGNÓSTICO C.R.I.S.</h2><i></i></div>
+    <div class="diagnostic-grid">
+      <div><small>LEITURA</small><strong class="diagnostic-ok">DISPONÍVEL*</strong></div>
+      <div><small>ESCRITA</small><strong class="diagnostic-off">NÃO DISPONÍVEL</strong></div>
+      <div><small>EVENTOS OFICIAIS</small><strong class="diagnostic-off">NÃO DOCUMENTADOS</strong></div>
+      <div><small>TRANSPORTE ATIVO</small><strong>${state.pollIntervalMs / 1000}s POLLING</strong></div>
+    </div>
+    <div class="source-box"><div class="source-status"><span class="status-light"></span><strong>FONTE: DOCUMENTO FIRESTORE DO C.R.I.S.</strong></div>
       <p>${display(url)}</p>
-      <small>A ficha é consultada diretamente no Firestore público usado pelo C.R.I.S. O conteúdo é atualizado quando o Mestre abre o dossiê ou solicita uma nova sincronização.</small>
+      <small>*A leitura usa o documento Firestore observado em clientes comunitários. O C.R.I.S. não publicou contrato oficial de API que garanta estabilidade. O polling funciona enquanto este dossiê estiver aberto e a extensão visível.</small>
       <button class="button secondary full" data-action="open-source">ABRIR NO C.R.I.S. ↗</button>
       ${state.role === "GM" ? `<button class="button primary full" data-action="refresh-sheet" ${state.busy ? "disabled" : ""}>ATUALIZAR FICHA AGORA</button>` : ""}
-      ${sheet ? `<p class="footnote">Última leitura: ${new Date(sheet.updatedAt).toLocaleString("pt-BR")}.</p>` : ""}
+      ${sheet ? `<p class="footnote">Última leitura confirmada: ${state.lastSyncAt ? new Date(state.lastSyncAt).toLocaleString("pt-BR") : new Date(sheet.updatedAt).toLocaleString("pt-BR")}.</p>` : ""}
     </div></section>
-    <section class="section-block"><div class="section-title"><span>10</span><h2>COMPARTILHAMENTO</h2><i></i></div>
-      ${state.role === "GM" ? `<label class="toggle-row"><span><strong>Compartilhar dados com jogadores</strong><small>Grava uma cópia dos dados consultados na metadata sincronizada deste Token.</small></span>
+    <section class="section-block"><div class="section-title"><span>10</span><h2>EDIÇÃO DE RECURSOS</h2><i></i></div>
+      <p class="muted-note">PV, PE e SAN estão em somente leitura. Não foi encontrada uma API externa de escrita documentada pelo C.R.I.S. Um PATCH direto no Firestore precisaria de autenticação e permissão válida nas regras do banco. A extensão não simula salvamento e não altera o cache local como se a gravação tivesse sido confirmada.</p>
+      <div class="diagnostic-grid">
+        ${(["pv", "pe", "san"] as ResourceKey[]).map((key) => `<div><small>${resourceLabel(key)}</small><strong class="diagnostic-off">${CRIS_WRITE_CAPABILITIES[key].supported ? "EDITÁVEL" : "SOMENTE LEITURA"}</strong></div>`).join("")}
+      </div>
+      ${state.role === "GM" ? `<label class="field-label" for="sync-interval">FREQUÊNCIA DE CONSULTA AUTOMÁTICA</label>
+        <select id="sync-interval" class="sync-interval-select">
+          <option value="10000" ${state.pollIntervalMs === 10000 ? "selected" : ""}>10 SEGUNDOS</option>
+          <option value="15000" ${state.pollIntervalMs === 15000 ? "selected" : ""}>15 SEGUNDOS</option>
+          <option value="30000" ${state.pollIntervalMs === 30000 ? "selected" : ""}>30 SEGUNDOS</option>
+        </select>
+      ` : ""}
+    </section>
+    <section class="section-block"><div class="section-title"><span>11</span><h2>COMPARTILHAMENTO</h2><i></i></div>
+      ${state.role === "GM" ? `<label class="toggle-row"><span><strong>Compartilhar dados com jogadores</strong><small>Grava uma cópia somente depois que o Mestre autoriza a visualização na metadata sincronizada dos Tokens vinculados.</small></span>
         <input id="share-toggle" type="checkbox" ${state.shareWithPlayers ? "checked" : ""}><i></i></label>
         <button class="button secondary full" data-action="save-sharing">SALVAR PERMISSÃO DE VISUALIZAÇÃO</button>` :
         `<p class="muted-note">${state.shareWithPlayers ? "O Mestre autorizou a visualização desta cópia da ficha." : "O Mestre não autorizou o compartilhamento dos dados desta ficha."}</p>`}
     </section>
+    <section class="section-block"><div class="section-title"><span>12</span><h2>HISTÓRICO DE SINCRONIZAÇÃO</h2><i></i></div><div class="sync-history">${history}</div></section>
     ${state.role === "GM" ? `<div class="action-stack"><button class="button danger" data-action="unbind">DESVINCULAR TOKEN</button></div>` : ""}
-    ${sheet?.additional && Object.keys(sheet.additional).length ? `<section class="section-block"><div class="section-title"><span>11</span><h2>INFORMAÇÕES ADICIONAIS</h2><i></i></div><pre class="additional-data">${escapeHtml(JSON.stringify(sheet.additional, null, 2))}</pre></section>` : ""}
+    ${sheet?.additional && Object.keys(sheet.additional).length ? `<section class="section-block"><div class="section-title"><span>13</span><h2>INFORMAÇÕES ADICIONAIS</h2><i></i></div><pre class="additional-data">${escapeHtml(JSON.stringify(sheet.additional, null, 2))}</pre></section>` : ""}
   `;
 }
 
@@ -263,13 +337,27 @@ function renderApp(state: AppState): string {
   const title = state.mode === "library" ? "ARQUIVO DA SALA" : state.mode === "bind" ? "VINCULAR TOKEN" : "DOSSIÊ DO AGENTE";
   const header = renderHeader(state);
   const body = state.mode === "library" ? renderLibrary(state) : state.sheet ? `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title} ${state.token ? `// ${escapeHtml(state.token.name ?? "TOKEN")}` : ""}</div><h1>Ficha do Personagem</h1><p>Registro de campo associado ao C.R.I.S.</p></section>${renderNavigation(state.activeTab)}<main class="sheet-content">${renderSheetContent(state)}</main>` : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title}</div><h1>Vincular ficha ao Token</h1><p>${escapeHtml(state.token?.name ?? "Token selecionado")}</p></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
-  return `<div class="app-shell">${header}<main class="content">${body}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.1.0 · ${state.role}</span></footer></div>`;
+  return `<div class="app-shell">${header}<main class="content">${renderSyncBanner(state)}${body}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.2.0 · ${state.role}</span></footer></div>`;
 }
 
 export class CrisApp {
   private state: AppState;
   private root: HTMLDivElement;
   private sourceUrl = "";
+  private pollTimer?: number;
+  private syncInFlight = false;
+  private unsubscribeSceneItems?: () => void;
+  private readonly visibilityHandler = (): void => {
+    if (document.hidden) this.stopPolling();
+    else this.startPolling();
+  };
+  private readonly pageHideHandler = (): void => {
+    this.stopPolling();
+    this.unsubscribeSceneItems?.();
+    this.unsubscribeSceneItems = undefined;
+    document.removeEventListener("visibilitychange", this.visibilityHandler);
+    window.removeEventListener("pagehide", this.pageHideHandler);
+  };
 
   constructor(element: HTMLDivElement) {
     this.root = element;
@@ -283,11 +371,16 @@ export class CrisApp {
       library: [],
       activeTab: "overview",
       shareWithPlayers: false,
+      syncStatus: "SYNCED",
+      syncHistory: [],
+      pollIntervalMs: readSyncInterval(),
       busy: false,
     };
     this.root.addEventListener("click", (event) => void this.handleClick(event));
     this.root.addEventListener("submit", (event) => void this.handleSubmit(event));
     this.root.addEventListener("change", (event) => this.handleChange(event));
+    document.addEventListener("visibilitychange", this.visibilityHandler);
+    window.addEventListener("pagehide", this.pageHideHandler);
   }
 
   async initialize(): Promise<void> {
@@ -299,8 +392,10 @@ export class CrisApp {
       return;
     }
     await this.reloadRoomData();
+    this.unsubscribeSceneItems = OBR.scene.items.onChange((items) => this.handleSceneItemsChanged(items));
     await registerContextMenu();
     this.render();
+    this.startPolling();
   }
 
   private async reloadRoomData(): Promise<void> {
@@ -327,6 +422,7 @@ export class CrisApp {
       ? (persistence.get(binding.sheetId) ?? binding.snapshot)
       : undefined;
     this.state.shareWithPlayers = binding.shareWithPlayers;
+    if (binding.snapshot) this.state.lastSyncAt = binding.snapshot.updatedAt;
 
     // O Mestre consulta a origem ao abrir o Token. Jogadores usam somente
     // o snapshot que o Mestre autorizou a sincronizar na metadata do Token.
@@ -337,6 +433,8 @@ export class CrisApp {
         const result = await connectCrisLink(binding.sourceUrl);
         persistence.save(result.sheet);
         this.state.sheet = result.sheet;
+        this.state.lastSyncAt = Date.now();
+        this.state.syncStatus = "SYNCED";
         const updatedReference: CrisSheetReference = {
           ...reference,
           name: `Agente ${binding.sheetId.slice(0, 6)}`,
@@ -347,12 +445,13 @@ export class CrisApp {
         if (this.state.role === "GM") {
           await upsertRoomSheet(updatedReference);
           if (binding.shareWithPlayers) {
-            await updateTokenSnapshot(this.state.tokenId, result.sheet, true);
+            await syncSharedSnapshotsForSheet(binding.sheetId, result.sheet);
             this.state.binding = await this.getUpdatedBinding();
           }
           this.state.library = (await getRoomLibrary()).sheets;
         }
       } catch (error) {
+        this.state.syncStatus = isCrisNetworkFailure(error) ? "OFFLINE" : "ERROR";
         if (cached) {
           this.state.sheet = cached;
           this.state.toast = {
@@ -417,7 +516,10 @@ export class CrisApp {
         this.state.binding = await this.getUpdatedBinding();
         this.state.mode = "token";
       }
+      this.state.syncStatus = "SYNCED";
+      this.state.lastSyncAt = Date.now();
       this.toast(result.message, "success");
+      this.startPolling();
     } catch (error) {
       this.toast(error instanceof Error ? error.message : "Não foi possível consultar a ficha do C.R.I.S.", "error");
     } finally {
@@ -426,6 +528,114 @@ export class CrisApp {
   }
 
   private async refreshCurrentSheet(): Promise<void> {
+    await this.syncRemoteSheet(true);
+  }
+
+  private startPolling(): void {
+    if (
+      this.pollTimer !== undefined ||
+      this.state.role !== "GM" ||
+      this.state.mode === "library" ||
+      !this.state.reference ||
+      document.hidden
+    ) return;
+
+    this.pollTimer = window.setInterval(() => {
+      void this.syncRemoteSheet(false);
+    }, this.state.pollIntervalMs);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer === undefined) return;
+    window.clearInterval(this.pollTimer);
+    this.pollTimer = undefined;
+  }
+
+  private applyIncomingSnapshot(snapshot: CharacterSheet): void {
+    const previous = this.state.sheet ?? persistence.get(snapshot.id);
+    const reconciliation = reconcileRemoteSheet(previous, snapshot);
+    if (!reconciliation.changed) {
+      if (!this.state.sheet && reconciliation.sheet) {
+        this.state.sheet = reconciliation.sheet;
+        this.render();
+      }
+      return;
+    }
+
+    const deltas = diffResourceValues(previous?.resources, snapshot.resources);
+    const timestamp = Date.now();
+    this.state.sheet = reconciliation.sheet;
+    this.state.lastSyncAt = timestamp;
+    this.state.syncStatus = "REMOTE_CHANGE";
+    if (deltas.length) {
+      this.state.syncHistory = [
+        ...deltas.map((delta) => ({ ...delta, source: "C.R.I.S." as const, at: timestamp })),
+        ...this.state.syncHistory,
+      ].slice(0, 30);
+    }
+    persistence.save(reconciliation.sheet);
+    this.render();
+  }
+
+  private handleSceneItemsChanged(items: SceneItem[]): void {
+    if (!this.state.tokenId) return;
+    const item = items.find((candidate) => candidate.id === this.state.tokenId);
+    if (!item) {
+      if (this.state.binding) {
+        persistence.remove(this.state.binding.sheetId);
+        this.state.binding = undefined;
+        this.state.reference = undefined;
+        this.state.sheet = undefined;
+        this.state.token = undefined;
+        this.state.mode = "library";
+        this.stopPolling();
+        this.toast("O Token vinculado foi removido da cena. A associação local foi encerrada.", "warning");
+      }
+      return;
+    }
+
+    const nextBinding = readTokenBinding(item);
+    if (!nextBinding) {
+      if (this.state.binding) {
+        this.state.binding = undefined;
+        this.state.sheet = undefined;
+        this.state.reference = undefined;
+        this.stopPolling();
+        this.state.syncStatus = "ERROR";
+        this.toast("O vínculo desta ficha foi removido do Token.", "warning");
+      }
+      return;
+    }
+
+    this.state.binding = nextBinding;
+    this.state.shareWithPlayers = nextBinding.shareWithPlayers;
+    this.state.reference = this.state.library.find((entry) => entry.id === nextBinding.sheetId) ?? {
+      id: nextBinding.sheetId,
+      url: nextBinding.sourceUrl,
+      name: nextBinding.displayName || `Agente ${nextBinding.sheetId.slice(0, 6)}`,
+      status: nextBinding.snapshot ? "imported" : "link-only",
+      addedAt: nextBinding.boundAt,
+      ...(nextBinding.snapshot ? { updatedAt: nextBinding.snapshot.updatedAt } : {}),
+    };
+    if (this.state.role === "PLAYER" && !nextBinding.shareWithPlayers) {
+      this.state.sheet = undefined;
+      persistence.remove(nextBinding.sheetId);
+      this.render();
+      return;
+    }
+
+    if (nextBinding.snapshot) {
+      this.applyIncomingSnapshot(nextBinding.snapshot);
+    }
+  }
+
+  private async syncRemoteSheet(manual: boolean): Promise<void> {
+    if (this.syncInFlight) return;
+    if (this.state.role !== "GM") {
+      if (manual) this.toast("Somente o Mestre pode consultar a origem. Jogadores recebem atualizações pela metadata compartilhada do Token.", "warning");
+      return;
+    }
+
     const reference = this.state.reference ?? (this.state.binding ? {
       id: this.state.binding.sheetId,
       url: this.state.binding.sourceUrl,
@@ -433,45 +643,80 @@ export class CrisApp {
       status: "link-only" as const,
       addedAt: this.state.binding.boundAt,
     } : undefined);
-    if (!reference) return this.toast("Nenhuma ficha está vinculada para atualizar.", "warning");
-    if (this.state.role === "PLAYER" && !this.state.binding?.shareWithPlayers) {
-      return this.toast("O Mestre não autorizou a visualização desta ficha.", "error");
+    if (!reference) {
+      if (manual) this.toast("Nenhuma ficha está vinculada para atualizar.", "warning");
+      return;
     }
 
     const cached = this.state.sheet ?? persistence.get(reference.id);
-    this.setBusy(true);
+    const previousStatus = this.state.syncStatus;
+    this.syncInFlight = true;
+    this.state.syncStatus = "SYNCING";
+    if (manual) {
+      this.setBusy(true);
+      this.render();
+    }
+
     try {
       const result = await connectCrisLink(reference.url);
-      persistence.save(result.sheet);
-      const updatedReference: CrisSheetReference = {
-        ...reference,
-        name: `Agente ${reference.id.slice(0, 6)}`,
-        status: "imported",
-        updatedAt: result.sheet.updatedAt,
-      };
+      const reconciliation = reconcileRemoteSheet(cached, result.sheet);
+      const timestamp = Date.now();
 
-      if (this.state.role === "GM") {
-        await upsertRoomSheet(updatedReference);
-        if (this.state.tokenId && this.state.binding) {
-          await updateTokenSnapshot(this.state.tokenId, result.sheet, this.state.shareWithPlayers);
-          this.state.binding = await this.getUpdatedBinding();
+      if (reconciliation.changed) {
+        const deltas = diffResourceValues(cached?.resources, result.sheet.resources);
+        this.state.sheet = reconciliation.sheet;
+        persistence.save(reconciliation.sheet);
+        this.state.syncStatus = "REMOTE_CHANGE";
+        if (deltas.length) {
+          this.state.syncHistory = [
+            ...deltas.map((delta) => ({ ...delta, source: "C.R.I.S." as const, at: timestamp })),
+            ...this.state.syncHistory,
+          ].slice(0, 30);
         }
+
+        const updatedReference: CrisSheetReference = {
+          ...reference,
+          status: "imported",
+          updatedAt: result.sheet.updatedAt,
+        };
+        this.state.reference = updatedReference;
+        await upsertRoomSheet(updatedReference);
+        await syncSharedSnapshotsForSheet(reference.id, reconciliation.sheet);
         this.state.library = (await getRoomLibrary()).sheets;
+      } else {
+        if (!this.state.sheet && reconciliation.sheet) {
+          this.state.sheet = reconciliation.sheet;
+          persistence.save(reconciliation.sheet);
+        }
+        this.state.syncStatus = "SYNCED";
       }
 
-      this.state.reference = updatedReference;
-      this.state.sheet = result.sheet;
-      this.state.activeTab = "overview";
-      this.toast(result.message, "success");
+      this.state.lastSyncAt = timestamp;
+      if (manual) {
+        this.toast(
+          reconciliation.changed
+            ? "Ficha consultada e atualizada com os dados confirmados pelo C.R.I.S."
+            : "Consulta concluída. Nenhum campo mudou no C.R.I.S.",
+          "success",
+        );
+      } else if (reconciliation.changed || previousStatus !== this.state.syncStatus) {
+        this.render();
+      }
     } catch (error) {
-      if (cached) {
-        this.state.sheet = cached;
-        this.toast("A atualização falhou. A última versão salva continua disponível.", "warning");
-      } else {
-        this.toast(error instanceof Error ? error.message : "Não foi possível atualizar a ficha.", "error");
+      this.state.syncStatus = isCrisNetworkFailure(error) ? "OFFLINE" : "ERROR";
+      if (manual) {
+        this.toast(
+          cached
+            ? "Não foi possível sincronizar. Mantive a última versão confirmada do C.R.I.S."
+            : (error instanceof Error ? error.message : "Não foi possível consultar o C.R.I.S."),
+          "warning",
+        );
+      } else if (previousStatus !== this.state.syncStatus) {
+        this.render();
       }
     } finally {
-      this.setBusy(false);
+      this.syncInFlight = false;
+      if (manual) this.setBusy(false);
     }
   }
 
@@ -503,6 +748,7 @@ export class CrisApp {
           this.state.activeTab = "overview";
           if (this.state.role === "GM") await this.refreshCurrentSheet();
           this.render();
+          this.startPolling();
           break;
         }
         case "bind-selected": {
@@ -534,6 +780,7 @@ export class CrisApp {
             this.state.sheet = undefined;
             this.state.binding = undefined;
             this.state.mode = "library";
+            this.stopPolling();
           }
           this.toast("Ficha removida da sala e dos Tokens associados.", "success");
           break;
@@ -549,6 +796,7 @@ export class CrisApp {
           this.state.shareWithPlayers = checkbox?.checked ?? false;
           await updateTokenSnapshot(this.state.tokenId, this.state.sheet, this.state.shareWithPlayers);
           this.state.binding = await this.getUpdatedBinding();
+          if (this.state.shareWithPlayers) await syncSharedSnapshotsForSheet(this.state.binding?.sheetId ?? this.state.sheet.id, this.state.sheet);
           this.toast(this.state.shareWithPlayers ? "Cópia do dossiê compartilhada com a sala." : "Dados detalhados mantidos somente neste navegador.", "success");
           break;
         }
@@ -567,6 +815,7 @@ export class CrisApp {
           break;
         }
         case "back-library":
+          this.stopPolling();
           this.state.mode = "library";
           this.state.tokenId = undefined;
           this.state.token = undefined;
@@ -587,6 +836,15 @@ export class CrisApp {
     const target = event.target;
     if (target instanceof HTMLInputElement && target.id === "share-toggle") {
       this.state.shareWithPlayers = target.checked;
+      return;
+    }
+    if (target instanceof HTMLSelectElement && target.id === "sync-interval") {
+      const nextInterval = Number(target.value);
+      if (!ALLOWED_SYNC_INTERVALS.includes(nextInterval as (typeof ALLOWED_SYNC_INTERVALS)[number])) return;
+      this.state.pollIntervalMs = nextInterval;
+      saveSyncInterval(nextInterval);
+      this.stopPolling();
+      this.startPolling();
     }
   }
 

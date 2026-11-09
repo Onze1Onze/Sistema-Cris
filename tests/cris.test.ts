@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildFirestoreDocumentUrl, connectCrisLink, CrisLinkError, validateCrisUrl } from "../src/cris/crisClient";
 import { parseCharacterJson, parseFirestoreCharacterDocument } from "../src/cris/crisParser";
+import { checkConcurrentValue } from "../src/cris/crisConflict";
+import { CRIS_EVENT_CAPABILITIES, getCrisEventTransport } from "../src/cris/crisEvents";
+import { reconcileRemoteSheet, diffResourceValues, isCrisNetworkFailure } from "../src/cris/crisSync";
+import { CrisWriteUnavailableError, isCrisResourceWritable, writeResourceToCris } from "../src/cris/crisWrite";
 
 const sampleUrl = "https://crisordemparanormal.com/agente/AbC123";
 
@@ -256,5 +260,109 @@ describe("integração automática com Firestore do C.R.I.S.", () => {
       return new Response(JSON.stringify(firestoreDocument()), { status: 200 });
     });
     expect(method).toBe("GET");
+  });
+});
+
+describe("limites seguros de escrita do C.R.I.S.", () => {
+  it("mantém PV, PE e SAN somente leitura enquanto não existe escrita autorizada", () => {
+    expect(isCrisResourceWritable("pv")).toBe(false);
+    expect(isCrisResourceWritable("pe")).toBe(false);
+    expect(isCrisResourceWritable("san")).toBe(false);
+  });
+
+  it("recusa a escrita sem realizar uma alteração local ou remota", async () => {
+    await expect(writeResourceToCris("pv", 28)).rejects.toBeInstanceOf(CrisWriteUnavailableError);
+    await expect(writeResourceToCris("pe", 10)).rejects.toMatchObject({ code: "CRIS_WRITE_UNAVAILABLE" });
+    await expect(writeResourceToCris("san", 31)).rejects.toMatchObject({ code: "CRIS_WRITE_UNAVAILABLE" });
+  });
+});
+
+describe("detecção de conflito", () => {
+  it("só considera segura uma proposta baseada no valor remoto ainda atual", () => {
+    expect(checkConcurrentValue(32, 20, 32).state).toBe("SAFE_TO_WRITE");
+  });
+
+  it("reconhece quando o valor proposto já foi aplicado remotamente", () => {
+    expect(checkConcurrentValue(32, 20, 20)).toEqual({ state: "ALREADY_APPLIED", value: 20 });
+  });
+
+  it("detecta conflito se o C.R.I.S. mudou desde a leitura-base", () => {
+    expect(checkConcurrentValue(32, 20, 25)).toEqual({
+      state: "CONFLICT",
+      base: 32,
+      proposed: 20,
+      remote: 25,
+    });
+  });
+});
+
+describe("sincronização remota", () => {
+  const baseSheet = parseCharacterJson(JSON.stringify({
+    identity: { name: "Eleanor Hale" },
+    resources: {
+      pv: { current: 32, max: 40 },
+      pe: { current: 15, max: 20 },
+      san: { current: 42, max: 55 },
+    },
+  }), "AbC123", sampleUrl, 100);
+
+  it("ignora updatedAt isolado e não recria um delta falso", () => {
+    const next = { ...baseSheet, updatedAt: 200 };
+    const result = reconcileRemoteSheet(baseSheet, next);
+    expect(result.changed).toBe(false);
+    expect(result.changedPaths).toEqual([]);
+    expect(result.sheet).toBe(baseSheet);
+  });
+
+  it("detecta somente o recurso que mudou na origem", () => {
+    const incoming = {
+      ...baseSheet,
+      updatedAt: 300,
+      resources: {
+        pv: { current: 24, max: 40 },
+        pe: { current: 15, max: 20 },
+        san: { current: 42, max: 55 },
+      },
+    };
+    const result = reconcileRemoteSheet(baseSheet, incoming);
+    expect(result.changed).toBe(true);
+    expect(result.changedPaths).toContain("resources.pv.current");
+    expect(result.changedPaths).not.toContain("resources.pe.current");
+    expect(result.sheet.resources?.pv?.current).toBe(24);
+  });
+
+  it("gera histórico apenas para recursos cujo valor atual mudou", () => {
+    expect(diffResourceValues(
+      {
+        pv: { current: 32, max: 40 },
+        pe: { current: 15, max: 20 },
+        san: { current: 42, max: 55 },
+      },
+      {
+        pv: { current: 24, max: 40 },
+        pe: { current: 15, max: 20 },
+        san: { current: 37, max: 55 },
+      },
+    )).toEqual([
+      { resource: "pv", previous: 32, current: 24 },
+      { resource: "san", previous: 42, current: 37 },
+    ]);
+  });
+
+  it("classifica falhas de rede sem apagar a última versão conhecida", () => {
+    expect(isCrisNetworkFailure({ code: "NETWORK_OR_CORS" })).toBe(true);
+    expect(isCrisNetworkFailure({ code: "TIMEOUT" })).toBe(true);
+    expect(isCrisNetworkFailure({ code: "INVALID_RESPONSE" })).toBe(false);
+  });
+});
+
+describe("transporte de eventos", () => {
+  it("não inventa websocket ou eventos oficiais; usa polling moderado", () => {
+    expect(CRIS_EVENT_CAPABILITIES.officialWebSocket).toBe(false);
+    expect(CRIS_EVENT_CAPABILITIES.officialWebhook).toBe(false);
+    expect(CRIS_EVENT_CAPABILITIES.officialChangeFeed).toBe(false);
+    expect(CRIS_EVENT_CAPABILITIES.pollingSupported).toBe(true);
+    expect(CRIS_EVENT_CAPABILITIES.pollingIntervalMs).toBe(15_000);
+    expect(getCrisEventTransport()).toBe("POLLING");
   });
 });

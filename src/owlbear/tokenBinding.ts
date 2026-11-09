@@ -96,3 +96,36 @@ export async function unbindAllTokensForSheet(sheetId: string): Promise<void> {
     }
   });
 }
+
+
+/**
+ * Atualiza de uma só vez o snapshot dos Tokens da cena que o Mestre autorizou
+ * compartilhar. Chamado somente depois de uma leitura remota confirmada.
+ * Tokens sem permissão de compartilhamento permanecem sem snapshot.
+ */
+export async function syncSharedSnapshotsForSheet(
+  sheetId: string,
+  snapshot: CharacterSheet,
+): Promise<number> {
+  const tokens = await getCharacterTokens();
+  const shared = tokens.filter((item) => {
+    const binding = readTokenBinding(item);
+    return binding?.sheetId === sheetId && binding.shareWithPlayers;
+  });
+  if (!shared.length) return 0;
+
+  await OBR.scene.items.updateItems(shared, (items) => {
+    for (const draft of items) {
+      const existing = readTokenBinding(draft);
+      if (!existing || existing.sheetId !== sheetId || !existing.shareWithPlayers) continue;
+      const updated: TokenBinding = {
+        ...existing,
+        displayName: snapshot.identity.name,
+        snapshot,
+      };
+      draft.metadata = { ...(draft.metadata ?? {}), [TOKEN_METADATA_KEY]: updated };
+    }
+  });
+
+  return shared.length;
+}
