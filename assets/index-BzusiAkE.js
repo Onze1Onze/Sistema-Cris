@@ -102,4 +102,4 @@
       <p>Não foi possível iniciar a extensão. Recarregue o painel e confira o console do navegador para obter detalhes técnicos.</p>
     </main>
   `});window.addEventListener("beforeunload",()=>Lt.dispose());
-//# sourceMappingURL=index-D0WilNAV.js.map
+//# sourceMappingURL=index-BzusiAkE.js.map
