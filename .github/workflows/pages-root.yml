@@ -54,7 +54,7 @@ jobs:
             width: 390,
             height: 720
           };
-          fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\\n');
+          fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
           NODE
           test -s dist/manifest.json
           test -s dist/index.html
