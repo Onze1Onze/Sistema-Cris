@@ -1,0 +1,16 @@
+{
+  "name": "Conexão com CRIS",
+  "version": "0.2.1",
+  "manifest_version": 1,
+  "description": "Importe fichas públicas do C.R.I.S. e visualize os dados do agente em um dossiê no Owlbear Rodeo.",
+  "author": "Onze1Onze",
+  "icon": "./icon.svg",
+  "homepage_url": "https://github.com/Onze1Onze/Sistema-Conex-o-com-Cris",
+  "action": {
+    "title": "Conexão com CRIS",
+    "icon": "./icon.svg",
+    "popover": "./index.html",
+    "width": 390,
+    "height": 720
+  }
+}
