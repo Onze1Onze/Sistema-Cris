@@ -1,4 +1,4 @@
-# Conexão com CRIS — extensão para Owlbear Rodeo
+# Sistema-Cris — extensão para Owlbear Rodeo
 
 Extensão para importar fichas públicas do C.R.I.S., apresentar o dossiê completo em um painel vertical do Owlbear Rodeo e vincular o registro a um Token da cena.
 
@@ -9,7 +9,7 @@ Extensão para importar fichas públicas do C.R.I.S., apresentar o dossiê compl
 1. Abra o Owlbear Rodeo e entre em uma sala.
 2. Em Extensions, adicione uma extensão usando o manifesto:
    `https://onze1onze.github.io/Sistema-Conex-o-com-Cris/manifest.json`
-3. Na barra de ações da sala, abra **Conexão com CRIS**. Não selecione outra extensão, como “Munição”.
+3. Na barra de ações da sala, abra **Sistema-Cris**. Não selecione outra extensão, como “Munição”.
 4. O campo de link fica visível logo ao abrir o arquivo. Cole o endereço público de uma ficha CRIS e pressione **IMPORTAR FICHA**.
 5. Depois da importação, o dossiê abre com os dados disponíveis: retrato, identidade, atributos, recursos, combate, perícias, poderes, habilidades, rituais, armas, equipamentos e inventário. Campos ainda não reconhecidos são preservados em **Informações adicionais**.
 
@@ -45,9 +45,9 @@ Os módulos de base permanecem organizados em `source-core.zip`, `source-sync.zi
 Para preparar o projeto localmente, extraia os módulos acima na raiz do repositório e aplique a interface atualizada com:
 `base64 --decode source-ui-fix.zip.b64 > /tmp/source-ui-fix.zip && unzip -o /tmp/source-ui-fix.zip -d .`
 
-Depois execute `npm install`, `npm test` e `npm run build`. A build é gerada em `dist/`.
+Depois execute `node scripts/rebrand.mjs`, `npm install`, `npm test` e `npm run build`. O script aplica a identidade visual e o manifesto do **Sistema-Cris** após a extração dos módulos. A build é gerada em `dist/`.
 
-O CI e o workflow `.github/workflows/pages-root.yml` preparam e sincronizam os arquivos estáticos (`manifest.json`, `index.html`, `icon.svg`, `assets/` e `.nojekyll`) na raiz do branch `main`. O GitHub Pages publica exclusivamente essa raiz do branch `main`; há apenas um mecanismo de publicação, evitando concorrência entre deploys.
+O CI e o workflow `.github/workflows/pages-root.yml` preparam e sincronizam os arquivos estáticos (`manifest.json`, `index.html`, `icon.svg`, `assets/` e `.nojekyll`) na raiz do branch `main`. O GitHub Pages publica exclusivamente essa raiz do branch `main`; há apenas um mecanismo de publicação, evitando concorrência entre deploys. O endereço do manifesto acima permanece no slug atual do repositório até que o próprio repositório seja renomeado nas configurações do GitHub.
 
 ## Persistência e permissões
 
