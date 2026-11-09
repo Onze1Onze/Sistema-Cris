@@ -1,9 +1,9 @@
 {
   "name": "sistema-cris",
   "private": true,
-  "version": "1.3.0",
+  "version": "1.4.0",
   "type": "module",
-  "description": "Extensão do Owlbear Rodeo para fichas C.R.I.S., rolagens de Ordem Paranormal, painel do Mestre, condições e histórico de sessão.",
+  "description": "Extensão do Owlbear Rodeo para fichas C.R.I.S., rolagens, iniciativa, combate, painel do Mestre, condições e histórico de sessão.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
