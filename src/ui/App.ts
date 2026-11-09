@@ -27,6 +27,25 @@ import { appendSessionEvent, getSessionHistory, SESSION_HISTORY_KEY, type Sessio
 import { loadMasterRoster, locateToken, type MasterRosterEntry } from "../master-panel/masterPanel";
 import { matchesRosterFilter, type RosterFilter } from "../master-panel/rosterFilters";
 import { syncConditionMarkers } from "../conditions/conditionMarkers";
+import {
+  INITIATIVE_SCENE_KEY,
+  INITIATIVE_TOKEN_KEY,
+  advanceInitiativeTurn,
+  buildInitiativeEntries,
+  createInitiativeRollSnapshot,
+  effectiveThreatBonus,
+  findInitiativeTies,
+  getInitiativeProfile,
+  initiativeProgress,
+  isInitiativeEligible,
+  normalizeInitiativeCombatant,
+  normalizeInitiativeScene,
+  readInitiativeCombatant,
+  selectInitiativeTurn,
+  type InitiativeCombatant,
+  type InitiativeEntry,
+  type InitiativeSceneState,
+} from "../initiative/initiativeEngine";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const PAGES_BASE = "/Sistema-Cris/";
@@ -40,7 +59,7 @@ interface SyncHistoryEntry extends ResourceDelta {
 
 interface AppState {
   role: "GM" | "PLAYER";
-  mode: "library" | "token" | "bind" | "master";
+  mode: "library" | "token" | "bind" | "master" | "initiative";
   tokenId?: string;
   token?: SceneItem;
   binding?: TokenBinding;
@@ -56,6 +75,8 @@ interface AppState {
   pendingRoll?: RollRequest;
   rolling: boolean;
   rollResults: RollResult[];
+  initiativeEntries: InitiativeEntry[];
+  initiativeScene: InitiativeSceneState;
   masterRoster: MasterRosterEntry[];
   masterBusy: boolean;
   masterFilter: RosterFilter;
@@ -145,10 +166,13 @@ function renderSyncBanner(state: AppState): string {
 
 function renderHeader(state: AppState): string {
   const modeLabel = state.role === "GM" ? "ACESSO DO MESTRE" : "ACESSO DO JOGADOR";
+  const initiativeAction = state.mode === "initiative"
+    ? `<button class="header-action" data-action="back-library" type="button">ARQUIVO</button>`
+    : `<button class="header-action" data-action="open-initiative" type="button">INICIATIVA</button>`;
   return `<header class="topbar">
     <div class="brand-seal" aria-hidden="true"><span>✦</span><i></i></div>
     <div class="brand-copy"><div class="micro-label">ORDEM REALITAS // ARQUIVO DIGITAL</div><div class="brand-title">SISTEMA <b>C.R.I.S.</b></div></div>
-    <div class="header-stamp"><span class="status-light"></span><span>${modeLabel}</span></div>
+    ${initiativeAction}<div class="header-stamp"><span class="status-light"></span><span>${modeLabel}</span></div>
   </header>
   <div class="subbar"><span>REGISTRO DE AGENTES</span><span>///</span><span>INTERFACE DE CAMPO v1.3</span></div>`;
 }
@@ -518,13 +542,16 @@ function renderApp(state: AppState): string {
   const title = state.mode === "library" ? "ARQUIVO DA SALA"
     : state.mode === "bind" ? "VINCULAR TOKEN"
     : state.mode === "master" ? "PAINEL DO MESTRE"
+    : state.mode === "initiative" ? "PROTOCOLO DE COMBATE"
     : "DOSSIÊ DO AGENTE";
   const header = renderHeader(state);
-  const body = state.mode === "library"
-    ? renderLibrary(state)
-    : state.mode === "master"
-      ? renderMasterPanel(state)
-      : state.sheet
+  const body = state.mode === "initiative"
+    ? renderInitiativePanel(state)
+    : state.mode === "library"
+      ? renderLibrary(state)
+      : state.mode === "master"
+        ? renderMasterPanel(state)
+        : state.sheet
         ? `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title} ${state.token ? `// ${escapeHtml(state.token.name ?? "TOKEN")}` : ""}</div><h1>Ficha do Personagem</h1><p>Registro de campo associado ao C.R.I.S.</p></section>${renderNavigation(state.activeTab, state.role)}<main class="sheet-content">${renderSheetContent(state)}</main>`
         : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title}</div><h1>Vincular ficha ao Token</h1><p>${escapeHtml(state.token?.name ?? "Token selecionado")}</p></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
   return `<div class="app-shell">${header}<main class="content">${renderSyncBanner(state)}${body}${state.mode === "token" || state.mode === "master" ? renderRollFeed(state) : ""}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.3.0 · ${state.role}</span></footer>${renderRollDialog(state)}</div>`;
@@ -585,7 +612,7 @@ export class CrisApp {
     this.root = element;
     const query = new URLSearchParams(window.location.search);
     const modeParam = query.get("mode");
-    const mode: AppState["mode"] = modeParam === "token" ? "token" : modeParam === "bind" ? "bind" : modeParam === "master" ? "master" : "library";
+    const mode: AppState["mode"] = modeParam === "token" ? "token" : modeParam === "bind" ? "bind" : modeParam === "master" ? "master" : modeParam === "initiative" ? "initiative" : "library";
     this.state = {
       role: "PLAYER",
       mode,
@@ -598,6 +625,8 @@ export class CrisApp {
       pollIntervalMs: readSyncInterval(),
       rolling: false,
       rollResults: [],
+      initiativeEntries: [],
+      initiativeScene: { ...DEFAULT_INITIATIVE_SCENE },
       masterRoster: [],
       masterBusy: false,
       masterFilter: "ALL",
