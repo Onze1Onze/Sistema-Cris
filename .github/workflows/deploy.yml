@@ -30,6 +30,8 @@ jobs:
           base64 --decode /tmp/source-bundle.b64 > source-bundle.zip
           unzip -oq source-bundle.zip -d .
           rm -f source-bundle.zip source-bundle.part-*
+          # The GitHub Actions token lacks the workflows permission; keep this bootstrap file unchanged.
+          git checkout -- .github/workflows/deploy.yml
           if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
