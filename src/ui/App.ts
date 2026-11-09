@@ -21,13 +21,14 @@ import {
   syncSharedSnapshotsForSheet,
   unbindAllTokensForSheet,
 } from "../owlbear/tokenBinding";
-import { buildAttributeRollRequest, buildSkillRollRequest, formatRollSummary, performRoll, ROLL_CHANNEL, type RollRequest, type RollResult } from "../rolls/rollService";
+import { buildAttributeRollRequest, buildSkillRollRequest, createRollId, formatRollSummary, performRoll, ROLL_CHANNEL, type RollRequest, type RollResult } from "../rolls/rollService";
 import type { RollBroadcastMessage } from "../rolls/rollTypes";
 import { appendSessionEvent, getSessionHistory, SESSION_HISTORY_KEY, type SessionEvent } from "../history/sessionHistory";
 import { loadMasterRoster, locateToken, type MasterRosterEntry } from "../master-panel/masterPanel";
 import { matchesRosterFilter, type RosterFilter } from "../master-panel/rosterFilters";
 import { syncConditionMarkers } from "../conditions/conditionMarkers";
 import {
+  DEFAULT_INITIATIVE_SCENE,
   INITIATIVE_SCENE_KEY,
   INITIATIVE_TOKEN_KEY,
   advanceInitiativeTurn,
@@ -712,6 +713,7 @@ export class CrisApp {
   private unsubscribeHistory?: () => void;
   private masterTimer?: number;
   private masterInFlight = false;
+  private pendingInitiativeTokenIds: string[] = [];
   private readonly visibilityHandler = (): void => {
     if (document.hidden) {
       this.stopPolling();
@@ -785,6 +787,7 @@ export class CrisApp {
       this.toast("O painel de operação é exclusivo do Mestre.", "warning");
     }
     await this.reloadRoomData();
+    await this.refreshInitiativeData();
     const session = await getSessionHistory();
     this.state.sessionEvents = session.events;
     this.unsubscribeHistory = OBR.scene.onMetadataChange((metadata) => {
@@ -793,6 +796,8 @@ export class CrisApp {
         this.state.sessionEvents = value.events;
         if (this.state.activeTab === "history" || this.state.mode === "master") this.render();
       }
+      this.state.initiativeScene = normalizeInitiativeScene(metadata[INITIATIVE_SCENE_KEY]);
+      if (this.state.mode === "initiative") void this.refreshInitiativeData();
     });
     this.unsubscribeBroadcast = OBR.broadcast.onMessage(ROLL_CHANNEL, (event) => {
       const message = parseRollBroadcast(event.data);
@@ -823,6 +828,392 @@ export class CrisApp {
     } else {
       this.startPolling();
     }
+  }
+
+  private resolveInitiativeSheet(item: SceneItem): CharacterSheet | undefined {
+    const binding = readTokenBinding(item);
+    if (!binding) return undefined;
+    if (this.state.role === "PLAYER" && !binding.shareWithPlayers) return undefined;
+    return persistence.get(binding.sheetId) ?? (binding.shareWithPlayers ? binding.snapshot : undefined);
+  }
+
+  private async refreshInitiativeData(items?: SceneItem[]): Promise<void> {
+    if (!(await OBR.scene.isReady())) {
+      this.state.initiativeEntries = [];
+      this.state.initiativeScene = { ...DEFAULT_INITIATIVE_SCENE };
+      if (this.state.mode === "initiative") this.render();
+      return;
+    }
+    const [sceneItems, metadata] = await Promise.all([
+      items ? Promise.resolve(items) : OBR.scene.items.getItems(),
+      OBR.scene.getMetadata(),
+    ]);
+    this.state.initiativeEntries = buildInitiativeEntries(sceneItems, (item) => this.resolveInitiativeSheet(item));
+    this.state.initiativeScene = normalizeInitiativeScene(metadata[INITIATIVE_SCENE_KEY]);
+    if (this.state.mode === "initiative") this.render();
+  }
+
+  private async persistInitiativeScene(nextState: InitiativeSceneState): Promise<void> {
+    const next = normalizeInitiativeScene(nextState);
+    await OBR.scene.setMetadata({ [INITIATIVE_SCENE_KEY]: next });
+    this.state.initiativeScene = next;
+    this.render();
+  }
+
+  private async openInitiativeAddDialog(): Promise<void> {
+    if (this.state.role !== "GM") return this.toast("Somente o Mestre pode adicionar participantes à iniciativa.", "error");
+    const selected = (await getCurrentSelection()).filter((item) => item.type === "IMAGE" && item.layer === "CHARACTER");
+    const eligible = selected.filter((item) => !readInitiativeCombatant(item));
+    if (!eligible.length) return this.toast("Selecione Tokens de personagem que ainda não estejam na ordem de iniciativa.", "warning");
+    this.pendingInitiativeTokenIds = eligible.map((item) => item.id);
+    this.state.mode = "initiative";
+    await this.refreshInitiativeData();
+    this.render();
+    this.root.querySelector<HTMLDialogElement>("#initiative-add-dialog")?.showModal();
+  }
+
+  private async submitInitiativeAdd(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.state.role !== "GM" || !this.pendingInitiativeTokenIds.length) return;
+    const role = this.root.querySelector<HTMLSelectElement>("#initiative-add-role")?.value === "THREAT" ? "THREAT" : "AGENT";
+    const groupName = this.root.querySelector<HTMLInputElement>("#initiative-group-name")?.value.trim() || "Ameaças";
+    const threatBonusInput = this.root.querySelector<HTMLInputElement>("#initiative-threat-bonus")?.value ?? "0";
+    const threatBonus = Number(threatBonusInput);
+    const modifier = Number(this.root.querySelector<HTMLInputElement>("#initiative-modifier")?.value ?? "0");
+    const surprised = this.root.querySelector<HTMLInputElement>("#initiative-surprised")?.checked ?? false;
+    if (!Number.isInteger(modifier) || modifier < -99 || modifier > 99 || !Number.isInteger(threatBonus) || threatBonus < -99 || threatBonus > 99) {
+      return this.toast("Os modificadores precisam ser números inteiros entre -99 e +99.", "warning");
+    }
+
+    const tokens = (await OBR.scene.items.getItems(this.pendingInitiativeTokenIds))
+      .filter((item) => item.type === "IMAGE" && item.layer === "CHARACTER" && !readInitiativeCombatant(item));
+    if (!tokens.length) return this.toast("Os Tokens selecionados não estão mais disponíveis.", "warning");
+
+    const nextRound = this.state.initiativeScene.started ? this.state.initiativeScene.round + 1 : 1;
+    const now = Date.now();
+    const updates = new Map<string, { version: 1; combatant: InitiativeCombatant }>();
+
+    if (role === "AGENT") {
+      const missing = tokens.filter((item) => {
+        const sheet = this.resolveInitiativeSheet(item);
+        if (!sheet) return true;
+        try { getInitiativeProfile(sheet); return false; } catch { return true; }
+      });
+      if (missing.length) {
+        return this.toast("Todos os agentes precisam de uma ficha C.R.I.S. acessível e da perícia Iniciativa vinculada à Agilidade. Corrija as fichas antes de recrutá-los.", "warning");
+      }
+      for (const item of tokens) {
+        const sheet = this.resolveInitiativeSheet(item)!;
+        const combatant = normalizeInitiativeCombatant({
+          role: "AGENT",
+          groupId: item.id,
+          displayName: sheet.identity.name || item.name || "Agente",
+          modifier,
+          initiative: null,
+          roll: null,
+          surprised,
+          availableFromRound: nextRound,
+          conditions: [],
+          note: "",
+          addedAt: now,
+        });
+        updates.set(item.id, { version: 1, combatant });
+      }
+    } else {
+      const profiles = tokens.map((item) => {
+        const sheet = this.resolveInitiativeSheet(item);
+        if (!sheet) return undefined;
+        try { return getInitiativeProfile(sheet); } catch { return undefined; }
+      });
+      const derivedBonus = profiles.every((profile) => profile !== undefined)
+        ? Math.min(...profiles.map((profile) => profile!.bonus))
+        : threatBonus;
+      const groupId = typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `threat-${now}-${Math.random().toString(36).slice(2, 8)}`;
+      const combatant = normalizeInitiativeCombatant({
+        role: "THREAT",
+        groupId,
+        groupName,
+        displayName: groupName,
+        threatBonus: derivedBonus,
+        modifier,
+        initiative: null,
+        roll: null,
+        surprised,
+        availableFromRound: nextRound,
+        conditions: [],
+        note: "",
+        addedAt: now,
+      });
+      for (const item of tokens) updates.set(item.id, { version: 1, combatant });
+    }
+
+    try {
+      await OBR.scene.items.updateItems([...updates.keys()], (draftItems) => {
+        for (const item of draftItems) {
+          const data = updates.get(item.id);
+          if (!data) continue;
+          item.metadata = item.metadata ?? {};
+          item.metadata[INITIATIVE_TOKEN_KEY] = data;
+        }
+      });
+      this.pendingInitiativeTokenIds = [];
+      this.root.querySelector<HTMLDialogElement>("#initiative-add-dialog")?.close();
+      await this.refreshInitiativeData();
+      this.toast(role === "THREAT" ? "Grupo de ameaças registrado com um único turno." : `${updates.size} agente(s) vinculado(s) à iniciativa do C.R.I.S.`, "success");
+    } catch (error) {
+      this.toast(error instanceof Error ? error.message : "Não foi possível registrar os envolvidos.", "error");
+    }
+  }
+
+  private async persistInitiativeEntry(entry: InitiativeEntry, next: InitiativeCombatant): Promise<void> {
+    await OBR.scene.items.updateItems(entry.tokenIds, (draftItems) => {
+      for (const item of draftItems) {
+        item.metadata = item.metadata ?? {};
+        item.metadata[INITIATIVE_TOKEN_KEY] = { version: 1, combatant: next };
+      }
+    });
+    await this.refreshInitiativeData();
+  }
+
+  private async rollInitiativeEntries(targets: InitiativeEntry[], message: string): Promise<void> {
+    if (this.state.role !== "GM" || !targets.length || this.state.busy) return;
+    const invalid = targets.find((entry) => entry.combatant.role === "AGENT" && (!entry.sheet || !entry.profile));
+    if (invalid) return this.toast(invalid.initiativeError ?? `A ficha de ${invalid.name} não oferece dados válidos para Iniciativa.`, "warning");
+
+    this.state.busy = true;
+    this.render();
+    try {
+      const rollerName = await OBR.player.getName();
+      const updates = new Map<string, { version: 1; combatant: InitiativeCombatant }>();
+      const results: RollResult[] = [];
+
+      for (const entry of targets) {
+        const modifiers = entry.combatant.modifier === 0
+          ? []
+          : [{ label: "Modificador situacional", value: entry.combatant.modifier }];
+        let request: RollRequest;
+        if (entry.combatant.role === "AGENT") {
+          request = buildSkillRollRequest(entry.sheet!, entry.profile!.skill, entry.tokenIds[0], undefined, modifiers);
+        } else {
+          request = {
+            id: createRollId(),
+            characterId: `threat-${entry.groupId}`,
+            characterName: entry.combatant.groupName || entry.name,
+            tokenId: entry.tokenIds[0],
+            type: "CUSTOM",
+            label: "Iniciativa",
+            attributeValue: 1,
+            skillBonus: effectiveThreatBonus(entry),
+            modifiers,
+            createdAt: Date.now(),
+          };
+        }
+        const result = performRoll(request, rollerName);
+        results.push(result);
+        const snapshot = createInitiativeRollSnapshot(
+          result.dice,
+          result.chosenDie,
+          result.attributeValue === 0 ? "lowest" : "highest",
+          result.totalBonus,
+          result.total,
+          result.rollerName,
+          `${result.attributeValue === 0 ? "2d20 (menor)" : `${result.attributeValue}d20 (maior)`} ${result.totalBonus >= 0 ? "+" : "−"} ${Math.abs(result.totalBonus)}`,
+          result.completedAt,
+        );
+        const next = normalizeInitiativeCombatant({
+          ...entry.combatant,
+          initiative: result.total,
+          roll: snapshot,
+        });
+        for (const tokenId of entry.tokenIds) updates.set(tokenId, { version: 1, combatant: next });
+      }
+
+      await OBR.scene.items.updateItems([...updates.keys()], (draftItems) => {
+        for (const item of draftItems) {
+          const data = updates.get(item.id);
+          if (!data) continue;
+          item.metadata = item.metadata ?? {};
+          item.metadata[INITIATIVE_TOKEN_KEY] = data;
+        }
+      });
+
+      for (const result of results) {
+        await OBR.broadcast.sendMessage(ROLL_CHANNEL, {
+          version: 1,
+          type: "ROLL_COMPLETED",
+          result,
+        } satisfies RollBroadcastMessage);
+        await appendSessionEvent({
+          characterId: result.characterId,
+          characterName: result.characterName,
+          tokenId: result.tokenId,
+          kind: "ROLL_COMPLETED",
+          field: "Iniciativa",
+          after: result.total,
+          source: "Owlbear",
+          detail: formatRollSummary(result),
+          at: result.completedAt,
+        });
+      }
+      this.state.rollResults = [...results.reverse(), ...this.state.rollResults].slice(0, 12);
+      await this.refreshSessionEvents();
+      await this.refreshInitiativeData();
+      await OBR.notification.show(message || "Testes de iniciativa concluídos.", "SUCCESS");
+    } catch (error) {
+      this.toast(error instanceof Error ? error.message : "A rolagem de iniciativa falhou.", "error");
+    } finally {
+      this.state.busy = false;
+      this.render();
+    }
+  }
+
+  private async rollInitiative(): Promise<void> {
+    const targets = this.state.initiativeScene.started
+      ? this.state.initiativeEntries.filter((entry) => !entry.combatant.roll)
+      : this.state.initiativeEntries;
+    if (!targets.length) return this.toast("Todos os envolvidos já possuem um teste de iniciativa.", "info");
+    await this.rollInitiativeEntries(targets, "Iniciativa registrada na ocorrência.");
+  }
+
+  private async resolveInitiativeTies(): Promise<void> {
+    const tied = findInitiativeTies(this.state.initiativeEntries).flat();
+    if (!tied.length) return;
+    await this.rollInitiativeEntries(tied, "Empates resolvidos por novas rolagens.");
+  }
+
+  private async startInitiativeCombat(): Promise<void> {
+    const entries = this.state.initiativeEntries;
+    if (!entries.length) return;
+    if (entries.some((entry) => !entry.combatant.roll)) {
+      return this.toast("Todos os participantes precisam de um teste válido antes do início do combate.", "warning");
+    }
+    if (findInitiativeTies(entries).length) return this.toast("Resolva todos os empates antes de iniciar.", "warning");
+    const first = entries.find((entry) => isInitiativeEligible(entry, 1));
+    await this.persistInitiativeScene({
+      started: true,
+      round: 1,
+      activeId: first?.id ?? null,
+      changedAt: Date.now(),
+    });
+    await appendSessionEvent({
+      characterName: "Combate",
+      kind: "CHARACTER_UPDATED",
+      field: "INÍCIO DO COMBATE",
+      after: 1,
+      source: "Sistema",
+      detail: `Combate iniciado com ${entries.length} participante(s).`,
+    });
+    await this.refreshSessionEvents();
+  }
+
+  private async changeInitiativeTurn(direction: number): Promise<void> {
+    if (!this.state.initiativeScene.started) return;
+    const next = advanceInitiativeTurn(this.state.initiativeEntries, this.state.initiativeScene, direction);
+    if (next.activeId === this.state.initiativeScene.activeId && next.round === this.state.initiativeScene.round) return;
+    await this.persistInitiativeScene(next);
+  }
+
+  private async endInitiativeCombat(): Promise<void> {
+    if (!this.state.initiativeScene.started) return;
+    if (!window.confirm("Encerrar o combate e manter os resultados dos participantes?")) return;
+    await this.persistInitiativeScene({
+      ...this.state.initiativeScene,
+      started: false,
+      round: 1,
+      activeId: null,
+      changedAt: Date.now(),
+    });
+    await appendSessionEvent({
+      characterName: "Combate",
+      kind: "CHARACTER_UPDATED",
+      field: "FIM DO COMBATE",
+      source: "Sistema",
+      detail: "Combate encerrado; os registros de iniciativa foram preservados.",
+    });
+    await this.refreshSessionEvents();
+  }
+
+  private async clearInitiative(): Promise<void> {
+    if (!this.state.initiativeEntries.length || !window.confirm("Apagar todos os registros de iniciativa desta cena? As fichas C.R.I.S. e os vínculos dos Tokens serão preservados.")) return;
+    const tokenIds = this.state.initiativeEntries.flatMap((entry) => entry.tokenIds);
+    await OBR.scene.items.updateItems(tokenIds, (draftItems) => {
+      for (const item of draftItems) {
+        if (item.metadata) delete item.metadata[INITIATIVE_TOKEN_KEY];
+      }
+    });
+    await this.persistInitiativeScene({ ...DEFAULT_INITIATIVE_SCENE, changedAt: Date.now() });
+    await this.refreshInitiativeData();
+    this.toast("Registros de iniciativa removidos. As fichas C.R.I.S. permanecem vinculadas.", "success");
+  }
+
+  private async removeInitiativeEntry(id: string): Promise<void> {
+    const entry = this.state.initiativeEntries.find((item) => item.id === id);
+    if (!entry) return;
+    await OBR.scene.items.updateItems(entry.tokenIds, (draftItems) => {
+      for (const item of draftItems) {
+        if (item.metadata) delete item.metadata[INITIATIVE_TOKEN_KEY];
+      }
+    });
+    await this.refreshInitiativeData();
+    if (this.state.initiativeScene.started && this.state.initiativeScene.activeId === id) {
+      const next = advanceInitiativeTurn(
+        this.state.initiativeEntries,
+        { ...this.state.initiativeScene, activeId: null },
+        1,
+      );
+      await this.persistInitiativeScene(next);
+    }
+  }
+
+  private openInitiativeEditor(id: string): void {
+    const entry = this.state.initiativeEntries.find((item) => item.id === id);
+    if (!entry) return;
+    const get = <T extends HTMLElement>(selector: string) => this.root.querySelector<T>(selector);
+    get<HTMLInputElement>("#initiative-edit-id")!.value = id;
+    get<HTMLInputElement>("#initiative-edit-modifier")!.value = String(entry.combatant.modifier);
+    get<HTMLInputElement>("#initiative-edit-surprised")!.checked = entry.combatant.surprised;
+    get<HTMLInputElement>("#initiative-edit-conditions")!.value = entry.combatant.conditions.join(", ");
+    get<HTMLTextAreaElement>("#initiative-edit-note")!.value = entry.combatant.note;
+    get<HTMLElement>("#initiative-edit-roll-info")!.textContent = entry.combatant.roll
+      ? `Resultado atual: ${entry.combatant.initiative}. Alterar o modificador invalida a rolagem e exige novo teste.`
+      : "Ainda não existe uma rolagem válida registrada.";
+    get<HTMLDialogElement>("#initiative-edit-dialog")?.showModal();
+  }
+
+  private async submitInitiativeEdit(event: Event): Promise<void> {
+    event.preventDefault();
+    const id = this.root.querySelector<HTMLInputElement>("#initiative-edit-id")?.value;
+    const entry = this.state.initiativeEntries.find((item) => item.id === id);
+    if (!entry) return;
+    const modifier = Number(this.root.querySelector<HTMLInputElement>("#initiative-edit-modifier")?.value ?? "0");
+    if (!Number.isInteger(modifier) || modifier < -99 || modifier > 99) return this.toast("O modificador precisa ser um inteiro entre -99 e +99.", "warning");
+    const surprised = this.root.querySelector<HTMLInputElement>("#initiative-edit-surprised")?.checked ?? false;
+    const conditions = (this.root.querySelector<HTMLInputElement>("#initiative-edit-conditions")?.value ?? "")
+      .split(",").map((part) => part.trim()).filter(Boolean).slice(0, 12);
+    const note = this.root.querySelector<HTMLTextAreaElement>("#initiative-edit-note")?.value.trim() ?? "";
+    const mechanicalChange = modifier !== entry.combatant.modifier;
+    const next = normalizeInitiativeCombatant({
+      ...entry.combatant,
+      modifier,
+      surprised,
+      conditions,
+      note,
+      ...(mechanicalChange ? { initiative: null, roll: null } : {}),
+    });
+    await this.persistInitiativeEntry(entry, next);
+    this.root.querySelector<HTMLDialogElement>("#initiative-edit-dialog")?.close();
+    this.toast(mechanicalChange ? "Modificador atualizado. Role a iniciativa novamente." : "Dossiê tático atualizado.", "success");
+  }
+
+  private async toggleInitiativeSurprised(id: string): Promise<void> {
+    const entry = this.state.initiativeEntries.find((item) => item.id === id);
+    if (!entry) return;
+    await this.persistInitiativeEntry(entry, normalizeInitiativeCombatant({
+      ...entry.combatant,
+      surprised: !entry.combatant.surprised,
+    }));
   }
 
   private async reloadRoomData(): Promise<void> {
