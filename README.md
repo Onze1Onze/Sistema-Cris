@@ -2,7 +2,7 @@
 
 Extensão para importar fichas públicas do C.R.I.S., apresentar o dossiê completo em um painel vertical do Owlbear Rodeo e vincular o registro a um Token da cena.
 
-**Versão publicada do manifesto:** 0.2.1
+**Versão publicada do manifesto:** 0.2.2
 
 ## Instalar no Owlbear
 
@@ -33,6 +33,10 @@ O nome da ficha, a classe e o conteúdo dependem dos dados públicos que o CRIS 
 O CRIS não disponibiliza uma especificação oficial documentada de API para leitura externa de fichas. A extensão usa um caminho REST do Firestore observado no adaptador comunitário público [visualizador_de_fichas](https://github.com/LucasPennacchi/visualizador_de_fichas) e tenta analisar o HTML público como alternativa.
 
 Esse caminho pode mudar e o acesso depende das regras públicas e de CORS do serviço. A extensão não usa login, senha, cookies, tokens, proxy de terceiros nem tenta contornar fichas privadas. Quando a origem bloqueia a leitura ou não fornece dados suficientes, o painel mostra uma mensagem de erro em vez de inventar informações.
+
+## Identidade visual
+
+O ícone oficial da extensão está em `branding/icon.svg`. Os workflows copiam esse arquivo para `public/icon.svg` antes de compilar, para que o manifesto e a barra de extensões do Owlbear usem sempre o mesmo símbolo de dossiê CRIS.
 
 ## Arquivos-fonte e build
 
