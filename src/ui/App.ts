@@ -538,6 +538,132 @@ function renderLibrary(state: AppState): string {
     <div class="footnote privacy-note">ASSOCIAÇÕES SÃO SALVAS NA CENA. OS DADOS SÃO CONSULTADOS DIRETAMENTE NO C.R.I.S.; O COMPARTILHAMENTO COM JOGADORES DEPENDE DA AUTORIZAÇÃO DO MESTRE.</div>`;
 }
 
+function renderInitiativePanel(state: AppState): string {
+  const entries = state.initiativeEntries;
+  const scene = state.initiativeScene;
+  const isGM = state.role === "GM";
+  const ties = findInitiativeTies(entries);
+  const active = entries.find((entry) => entry.id === scene.activeId);
+  const progress = initiativeProgress(entries, scene);
+  const unrolled = entries.filter((entry) => !entry.combatant.roll);
+  const eligible = entries.filter((entry) => isInitiativeEligible(entry, scene.round));
+  const participantCards = entries.map((entry, index) => {
+    const data = entry.combatant;
+    const isActive = entry.id === scene.activeId;
+    const isTied = ties.some((group) => group.some((candidate) => candidate.id === entry.id));
+    const late = scene.started && data.availableFromRound > scene.round;
+    const surprised = data.surprised && scene.round === 1;
+    const score = data.initiative === null ? "—" : String(data.initiative);
+    const role = data.role === "THREAT" ? "AMEAÇA" : "AGENTE";
+    const mechanics = data.role === "AGENT"
+      ? entry.profile
+        ? `AGI ${entry.profile.attributeValue} · INICIATIVA ${entry.profile.bonus >= 0 ? "+" : ""}${entry.profile.bonus}`
+        : entry.initiativeError ?? "AGUARDANDO FICHA C.R.I.S."
+      : entry.derivedThreatBonus !== undefined
+        ? `BÔNUS DA FICHA ${entry.derivedThreatBonus >= 0 ? "+" : ""}${entry.derivedThreatBonus} · MENOR DO GRUPO`
+        : `BÔNUS MANUAL ${data.threatBonus >= 0 ? "+" : ""}${data.threatBonus}`;
+    const flags = [
+      surprised ? '<span class="initiative-flag warning">SURPREENDIDO · NÃO AGE NA RODADA 1</span>' : "",
+      late ? `<span class="initiative-flag">ENTRA NA RODADA ${data.availableFromRound}</span>` : "",
+      isTied ? '<span class="initiative-flag danger">EMPATE · DESEMPATE NECESSÁRIO</span>' : "",
+      entry.conditions.map((condition) => `<span class="initiative-flag condition">${escapeHtml(condition)}</span>`).join(""),
+      entry.tokenIds.length > 1 ? `<span class="initiative-flag">${entry.tokenIds.length} TOKENS · TESTE ÚNICO</span>` : "",
+    ].filter(Boolean).join("");
+    const roll = data.roll
+      ? `${data.roll.dice.length}d20 [${data.roll.dice.join(" · ")}] · ${data.roll.keep === "lowest" ? "MENOR" : "MAIOR"} ${data.roll.selected} ${data.roll.bonus >= 0 ? "+" : ""}${data.roll.bonus} = ${data.roll.total}`
+      : data.initiative !== null ? `RESULTADO LEGADO ${data.initiative} · ROLE NOVAMENTE` : "TESTE DE INICIATIVA PENDENTE";
+    const portraitUrl = entry.members[0]?.type === "IMAGE" ? entry.members[0].image?.url : undefined;
+    const portraitMarkup = portraitUrl && /^https?:\/\//i.test(portraitUrl)
+      ? `<img class="initiative-portrait" src="${escapeHtml(portraitUrl)}" alt="" loading="lazy">`
+      : `<span class="initiative-portrait fallback">${escapeHtml((data.displayName || entry.name).slice(0, 2).toLocaleUpperCase("pt-BR"))}</span>`;
+    return `<article class="initiative-card ${isActive ? "is-active" : ""}" data-entry-id="${escapeHtml(entry.id)}">
+      <div class="initiative-card-head">
+        <span class="initiative-rank">${String(index + 1).padStart(2, "0")}</span>
+        ${portraitMarkup}
+        <div class="initiative-identity"><strong>${escapeHtml(data.displayName || entry.name)}</strong><small>${role} · ${escapeHtml(mechanics)}</small></div>
+        <div class="initiative-score ${data.roll ? "" : "pending"}"><small>${data.roll ? "INICIATIVA" : "PENDENTE"}</small><strong>${escapeHtml(score)}</strong></div>
+      </div>
+      ${flags ? `<div class="initiative-flags">${flags}</div>` : ""}
+      <div class="initiative-roll-detail">${escapeHtml(roll)}</div>
+      ${data.note ? `<p class="initiative-note">NOTA · ${escapeHtml(data.note)}</p>` : ""}
+      ${isGM ? `<div class="initiative-card-actions">
+        <button class="mini-button" data-action="initiative-edit" data-id="${escapeHtml(entry.id)}" type="button">EDITAR</button>
+        <button class="mini-button" data-action="initiative-toggle-surprised" data-id="${escapeHtml(entry.id)}" type="button">${data.surprised ? "REMOVER SURPRESA" : "SURPREENDIDO"}</button>
+        <button class="mini-button current" data-action="initiative-activate" data-id="${escapeHtml(entry.id)}" type="button" ${!scene.started || !isInitiativeEligible(entry, scene.round) ? "disabled" : ""}>${isActive ? "TURNO ATUAL" : "ATIVAR"}</button>
+        <button class="mini-button danger" data-action="initiative-remove" data-id="${escapeHtml(entry.id)}" type="button">REMOVER</button>
+      </div>` : ""}
+    </article>`;
+  }).join("");
+
+  return `<section class="initiative-view">
+    <div class="initiative-heading">
+      <button class="text-back" data-action="back-library" type="button">← ARQUIVO DA SALA</button>
+      <div class="micro-label">PROTOCOLO TÁTICO // ORDEM PARANORMAL RPG 1.2</div>
+      <h1>Ordem de Iniciativa</h1>
+      <p>Atributos, perícias e modificadores de agentes são lidos diretamente das fichas vinculadas do C.R.I.S.</p>
+    </div>
+    <section class="initiative-status">
+      <div class="initiative-case"><small>ESTADO DA OPERAÇÃO</small><strong>${scene.started ? "COMBATE EM ANDAMENTO" : entries.length ? "CENA PREPARADA" : "AGUARDANDO ENVOLVIDOS"}</strong><span>${entries.length} REGISTRO(S) · ${scene.round}ª RODADA</span></div>
+      <div class="initiative-round"><small>RODADA</small><strong>${scene.started ? String(scene.round).padStart(2, "0") : "—"}</strong></div>
+    </section>
+    <section class="initiative-turn-banner">
+      <div class="initiative-active-portrait">${active ? escapeHtml((active.combatant.displayName || active.name).slice(0, 2).toLocaleUpperCase("pt-BR")) : "—"}</div>
+      <div class="initiative-active-copy"><small>ENVOLVIDO EM AÇÃO</small><strong>${active ? escapeHtml(active.combatant.displayName || active.name) : "Nenhum turno ativo"}</strong><span>${active ? `${active.combatant.role === "THREAT" ? "AMEAÇA" : "AGENTE"} · INICIATIVA ${active.combatant.initiative}` : scene.started ? "Nenhum participante elegível nesta rodada." : "Inicie o combate para estabelecer a ordem."}</span></div>
+      <div class="initiative-progress"><div><small>SEQUÊNCIA</small><b>${progress}%</b></div><span><i style="width:${progress}%"></i></span></div>
+    </section>
+    <section class="initiative-rule-note">
+      <b>FÓRMULA C.R.I.S. · AGENTES</b>
+      <p>Usa a perícia Iniciativa da ficha, seu atributo-base Agilidade e o bônus total já calculado pelo C.R.I.S. AGI 0 mantém a regra de 2d20, escolhendo o menor. O treinamento não é somado novamente.</p>
+      <p><b>AMEAÇAS</b> — um teste único de 1d20 com o menor bônus de Iniciativa do grupo.</p>
+    </section>
+    ${isGM ? `<section class="initiative-controls">
+      <div class="section-title"><span>01</span><h2>CONTROLE DA OPERAÇÃO</h2><i></i></div>
+      <button class="button primary full" data-action="initiative-add-selected" type="button">＋ ADICIONAR TOKENS SELECIONADOS</button>
+      <div class="initiative-control-grid">
+        <button class="button secondary" data-action="initiative-roll" type="button" ${!entries.length || (scene.started && !unrolled.length) ? "disabled" : ""}>ROLAR INICIATIVA ${scene.started ? `(${unrolled.length} NOVOS)` : ""}</button>
+        <button class="button warning" data-action="initiative-resolve-ties" type="button" ${!ties.length ? "disabled" : ""}>DESEMPATAR (${ties.reduce((sum, group) => sum + group.length, 0)})</button>
+        <button class="button secondary" data-action="initiative-previous" type="button" ${!scene.started || !scene.activeId ? "disabled" : ""}>‹ TURNO ANTERIOR</button>
+        <button class="button secondary" data-action="initiative-next" type="button" ${!scene.started || !entries.length ? "disabled" : ""}>PRÓXIMO TURNO ›</button>
+        <button class="button primary" data-action="initiative-start" type="button" ${scene.started || !entries.length || unrolled.length > 0 || ties.length > 0 ? "disabled" : ""}>▶ INICIAR COMBATE</button>
+        <button class="button danger" data-action="initiative-end" type="button" ${!scene.started ? "disabled" : ""}>ENCERRAR COMBATE</button>
+      </div>
+      <button class="button danger full" data-action="initiative-clear" type="button" ${!entries.length ? "disabled" : ""}>LIMPAR REGISTRO DA CENA</button>
+      <p class="initiative-phase-note">${unrolled.length ? `${unrolled.length} participante(s) ainda precisam rolar iniciativa.` : ties.length ? "Resolva os empates antes de iniciar o combate." : scene.started ? "A iniciativa permanece fixa entre rodadas. Novos envolvidos entram na rodada seguinte." : "Revise os envolvidos e inicie o combate quando a ordem estiver pronta."}</p>
+    </section>` : ""}
+    <section class="initiative-participants">
+      <div class="section-title"><span>02</span><h2>ORDEM DE AÇÃO</h2><i></i><b>${entries.length.toString().padStart(2, "0")} REGISTROS</b></div>
+      ${participantCards || `<div class="empty-state"><span class="empty-scroll">✣</span><strong>NENHUM ENVOLVIDO REGISTRADO</strong><p>Selecione Tokens da camada Personagem e adicione-os à operação. Agentes precisam estar vinculados a uma ficha C.R.I.S.</p></div>`}
+      ${!isGM && entries.length ? '<p class="initiative-phase-note">Visualização da iniciativa compartilhada pela sala. O controle do combate pertence ao Mestre.</p>' : ""}
+      ${!eligible.length && scene.started ? '<p class="initiative-phase-note">Nenhum participante pode agir nesta rodada. Avance para a próxima rodada.</p>' : ""}
+    </section>
+  </section>
+  ${isGM ? `<dialog id="initiative-add-dialog" class="cris-dialog initiative-dialog">
+    <form id="initiative-add-form">
+      <div class="dialog-heading"><div><span class="micro-label">NOVO REGISTRO · ${state.initiativeEntries.length} NA CENA</span><h2>IDENTIFICAR ENVOLVIDOS</h2></div><button class="icon-button" data-action="initiative-close-add" type="button" aria-label="Fechar">×</button></div>
+      <label for="initiative-add-role">TIPO DE ENVOLVIDO</label>
+      <select id="initiative-add-role"><option value="AGENT">Agente / personagem com ficha C.R.I.S.</option><option value="THREAT">Ameaças — grupo do Mestre</option></select>
+      <label for="initiative-group-name">IDENTIFICAÇÃO DO GRUPO DE AMEAÇAS</label><input id="initiative-group-name" maxlength="80" value="Ameaças">
+      <label for="initiative-threat-bonus">BÔNUS DE INICIATIVA MANUAL (AMEAÇAS)</label><input id="initiative-threat-bonus" type="number" min="-99" max="99" value="0">
+      <p class="field-hint">Quando todos os Tokens do grupo tiverem fichas C.R.I.S. vinculadas e a perícia Iniciativa disponível, o sistema usa automaticamente o menor bônus da ficha. Caso contrário, utiliza este valor.</p>
+      <label for="initiative-modifier">MODIFICADOR SITUACIONAL ADICIONAL</label><input id="initiative-modifier" type="number" min="-99" max="99" value="0">
+      <label class="check-line"><input id="initiative-surprised" type="checkbox"><span>Surpreendido — não age na primeira rodada</span></label>
+      <div class="dialog-actions"><button class="text-action" data-action="initiative-close-add" type="button">CANCELAR</button><button class="dialog-submit" type="submit">REGISTRAR ENVOLVIDOS</button></div>
+    </form>
+  </dialog>
+  <dialog id="initiative-edit-dialog" class="cris-dialog initiative-dialog">
+    <form id="initiative-edit-form">
+      <div class="dialog-heading"><div><span class="micro-label">DOSSIÊ TÁTICO // AJUSTE INDIVIDUAL</span><h2>ALTERAR REGISTRO</h2></div><button class="icon-button" data-action="initiative-close-edit" type="button" aria-label="Fechar">×</button></div>
+      <input id="initiative-edit-id" type="hidden">
+      <label for="initiative-edit-modifier">MODIFICADOR SITUACIONAL</label><input id="initiative-edit-modifier" type="number" min="-99" max="99" value="0">
+      <label class="check-line"><input id="initiative-edit-surprised" type="checkbox"><span>Surpreendido — não age na primeira rodada</span></label>
+      <label for="initiative-edit-conditions">CONDIÇÕES ADICIONAIS <small>Separe por vírgulas</small></label><input id="initiative-edit-conditions" maxlength="180" placeholder="Ex.: Abalado, Caído">
+      <label for="initiative-edit-note">NOTAS DA OPERAÇÃO</label><textarea id="initiative-edit-note" rows="3" maxlength="500"></textarea>
+      <p id="initiative-edit-roll-info" class="field-hint"></p>
+      <div class="dialog-actions"><button class="text-action" data-action="initiative-close-edit" type="button">CANCELAR</button><button class="dialog-submit" type="submit">SALVAR DOSSIÊ</button></div>
+    </form>
+  </dialog>` : ""}`;
+}
+
 function renderApp(state: AppState): string {
   const title = state.mode === "library" ? "ARQUIVO DA SALA"
     : state.mode === "bind" ? "VINCULAR TOKEN"
