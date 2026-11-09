@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { InitiativeEntry } from "../src/initiative/initiativeEngine";
 import {
   advanceInitiativeTurn,
+  buildInitiativeEntries,
   findInitiativeTies,
   getInitiativeProfile,
   isInitiativeEligible,
+  LEGACY_INITIATIVE_TOKEN_KEY,
   normalizeInitiativeCombatant,
   normalizeInitiativeScene,
   sortInitiativeEntries,
 } from "../src/initiative/initiativeEngine";
 import type { CharacterSheet } from "../src/cris/crisTypes";
+import type { SceneItem } from "../src/owlbear/obr";
 
 const profileSheet = (agi: number, bonus: number): CharacterSheet => ({
   schemaVersion: 1,
@@ -57,6 +60,32 @@ describe("integração da iniciativa com dados do C.R.I.S.", () => {
       ...profileSheet(2, 5),
       skills: [{ name: "Iniciativa", attribute: "FOR", bonus: 5 }],
     })).toThrow(/associada à Agilidade/i);
+  });
+
+  it("lê participantes da antiga extensão e converte o bônus manual sem reutilizar AGI/treinamento antigos", () => {
+    const legacyToken = {
+      id: "legacy-token",
+      type: "IMAGE",
+      layer: "CHARACTER",
+      metadata: {
+        [LEGACY_INITIATIVE_TOKEN_KEY]: {
+          role: "AGENT",
+          displayName: "Agente legado",
+          groupId: "legacy-token",
+          agility: 5,
+          training: 15,
+          bonus: 2,
+          initiative: 18,
+          roll: { dice: [16], selected: 16, keep: "highest", bonus: 2, total: 18 },
+        },
+      },
+    } as unknown as SceneItem;
+    const entries = buildInitiativeEntries([legacyToken], () => undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].combatant.modifier).toBe(2);
+    expect(entries[0].combatant.initiative).toBe(18);
+    expect(entries[0].combatant.roll?.total).toBe(18);
+    expect(entries[0].initiativeError).toMatch(/ficha C.R.I.S./i);
   });
 
   it("normaliza e limita os modificadores independentes da ficha", () => {
