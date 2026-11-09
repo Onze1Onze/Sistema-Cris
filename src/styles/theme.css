@@ -376,16 +376,6 @@ input:focus, textarea:focus { border-color: var(--violet); box-shadow: 0 0 0 2px
 .condition-card strong { color: #e3c0bf; font: 700 8px/1.3 "IBM Plex Mono", monospace; }
 .condition-card p { margin: 4px 0; color: #c3b0b4; font-size: 10px; line-height: 1.45; }
 .condition-card small { color: #947d86; font: 6px/1.3 "IBM Plex Mono", monospace; }
-.combat-action-locked {
-  border: 1px dashed #68414b;
-  background: #1a141a;
-  padding: 10px;
-  margin-top: 10px;
-}
-.combat-action-locked strong { color: #d8a6b1; font: 700 8px/1.2 "IBM Plex Mono", monospace; letter-spacing: .1em; }
-.combat-action-locked p { color: #ae9ca5; font-size: 9px; line-height: 1.45; }
-.combat-action-locked button:disabled { opacity: .55; cursor: not-allowed; }
-
 /* Painel do Mestre */
 .master-panel { display: grid; gap: 10px; }
 .master-controls { display: grid; gap: 7px; }
