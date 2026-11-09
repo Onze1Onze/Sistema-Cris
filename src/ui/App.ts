@@ -862,6 +862,7 @@ export class CrisApp {
 
   private async openInitiativeAddDialog(): Promise<void> {
     if (this.state.role !== "GM") return this.toast("Somente o Mestre pode adicionar participantes à iniciativa.", "error");
+    this.state.masterRoster = await loadMasterRoster(false);
     const selected = (await getCurrentSelection()).filter((item) => item.type === "IMAGE" && item.layer === "CHARACTER");
     const eligible = selected.filter((item) => !readInitiativeCombatant(item));
     if (!eligible.length) return this.toast("Selecione Tokens de personagem que ainda não estejam na ordem de iniciativa.", "warning");
@@ -1766,6 +1767,7 @@ export class CrisApp {
       switch (action) {
         case "open-initiative": {
           this.state.mode = "initiative";
+          if (this.state.role === "GM") this.state.masterRoster = await loadMasterRoster(false);
           await this.refreshInitiativeData();
           break;
         }
@@ -1800,8 +1802,7 @@ export class CrisApp {
           await this.clearInitiative();
           break;
         case "initiative-edit":
-          if (sheetId) this.openInitiativeEditor(button.dataset.id ?? "");
-          else this.openInitiativeEditor(button.dataset.id ?? "");
+          if (button.dataset.id) this.openInitiativeEditor(button.dataset.id);
           break;
         case "initiative-toggle-surprised":
           if (button.dataset.id) await this.toggleInitiativeSurprised(button.dataset.id);
