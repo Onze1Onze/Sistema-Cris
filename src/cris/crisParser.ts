@@ -3,6 +3,7 @@ import type {
   AttackEntry,
   AttributeKey,
   CharacterSheet,
+  ConditionEntry,
   InventoryEntry,
   ResourceKey,
   SkillEntry,
@@ -31,6 +32,19 @@ function numeric(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+function normAttr(value: unknown): AttributeKey | undefined {
+  const source = text(value, 40)?.trim().toUpperCase();
+  if (!source) return undefined;
+  const map: Record<string, AttributeKey> = {
+    AGI: "AGI", DEX: "AGI", AGILITY: "AGI", AGILIDADE: "AGI",
+    FOR: "FOR", STR: "FOR", STRENGTH: "FOR", FORCA: "FOR", "FORÇA": "FOR",
+    INT: "INT", INTELLECT: "INT", INTELECTO: "INT",
+    PRE: "PRE", PRESENCE: "PRE", CHA: "PRE", PRESENCA: "PRE", "PRESENÇA": "PRE",
+    VIG: "VIG", CON: "VIG", CONSTITUTION: "VIG", VIGOR: "VIG",
+  };
+  return map[source];
 }
 
 function parseList<T>(value: unknown, parser: (item: unknown) => T | undefined): T[] | undefined {
@@ -97,6 +111,21 @@ function parseAbilities(value: unknown): AbilityEntry[] | undefined {
       name,
       ...(text(row.category, 80) ? { category: text(row.category, 80) } : {}),
       ...(text(row.detail, 2000) ? { detail: text(row.detail, 2000) } : {}),
+    };
+  });
+}
+
+function parseConditions(value: unknown): ConditionEntry[] | undefined {
+  return parseList(value, (item) => {
+    const row = record(item);
+    const name = text(row?.name, 120);
+    if (!row || !name) return undefined;
+    const duration = typeof row.duration === "number" ? String(row.duration) : text(row.duration, 120);
+    return {
+      name,
+      ...(text(row.description, 1000) ? { description: text(row.description, 1000) } : {}),
+      ...(duration ? { duration } : {}),
+      ...(text(row.source, 120) ? { source: text(row.source, 120) } : {}),
     };
   });
 }
@@ -182,6 +211,8 @@ export function parseCharacterJson(raw: string, fallbackId: string, sourceUrl: s
   if (abilities) sheet.abilities = abilities;
   const rituals = parseAbilities(root.rituals);
   if (rituals) sheet.rituals = rituals;
+  const conditions = parseConditions(root.conditions);
+  if (conditions?.length) sheet.conditions = conditions;
 
   if (combatSource) {
     const defense = numeric(combatSource.defense) ?? text(combatSource.defense, 40);
@@ -341,7 +372,7 @@ export function parseFirestoreCharacterDocument(
     const degree = numeric(skill.trainingDegree);
     const extra = numeric(skill.otherBonus) ?? 0;
     const total = numeric(skill.bonus) ?? numeric(skill.totalBonus) ?? ((degree ?? 0) + extra);
-    const attribute = firestoreText(skill.attribute, 20)?.toUpperCase() as AttributeKey | undefined;
+    const attribute = normAttr(firestoreText(skill.attribute, 40)) as AttributeKey | undefined;
     return {
       name: firestoreText(skill.name, 120) ?? "Perícia sem nome",
       ...(attribute && ATTRIBUTE_KEYS.includes(attribute) ? { attribute } : {}),
@@ -395,6 +426,8 @@ export function parseFirestoreCharacterDocument(
     ...(stripHtml(power.description) ? { detail: stripHtml(power.description) } : {}),
   }));
 
+  const conditions = parseConditions(fields.conditions);
+
   const rituals = listOfRecords(fields.rituals).map((ritual): AbilityEntry => {
     const extras = [
       firestoreText(ritual.circle, 40) ? `Círculo ${firestoreText(ritual.circle, 40)}` : undefined,
@@ -446,6 +479,7 @@ export function parseFirestoreCharacterDocument(
     ...(inventory.length ? { inventory } : {}),
     ...(abilities.length ? { abilities } : {}),
     ...(rituals.length ? { rituals } : {}),
+    ...(conditions?.length ? { conditions } : {}),
     combat: {
       defense,
       ...(numeric(fields.evade) !== undefined ? { dodge: numeric(fields.evade) } : {}),

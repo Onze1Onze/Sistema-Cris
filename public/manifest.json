@@ -1,8 +1,8 @@
 {
   "name": "Sistema C.R.I.S.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "manifest_version": 1,
-  "description": "Consulte fichas públicas do C.R.I.S. com atualização automática e vincule dossiês aos Tokens do Owlbear Rodeo.",
+  "description": "Fichas C.R.I.S. no Owlbear: rolagens de atributos e perícias, painel do Mestre, condições e histórico de sessão.",
   "icon": "https://onze1onze.github.io/Sistema-Cris/icon.svg",
   "author": "Onze1Onze",
   "homepage_url": "https://github.com/Onze1Onze/Sistema-Cris",

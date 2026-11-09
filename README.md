@@ -134,6 +134,59 @@ A aba **ARQUIVO → DIAGNÓSTICO C.R.I.S.** mostra a capacidade de leitura, a es
 - A sincronização não consulta a cada frame e não faz polling quando a extensão está oculta.
 
 
+## Operação de mesa: rolagens, painel do Mestre, condições e histórico
+
+### Rolador de atributos e perícias
+
+- Os cinco atributos e as perícias reconhecidas aparecem como controles clicáveis no dossiê.
+- Ao clicar, o Mestre ou jogador abre uma confirmação rápida com DT opcional e modificador opcional.
+- O motor usa a regra de teste do Ordem Paranormal RPG 1.2: um d20 por ponto do atributo e mantém o maior; com atributo 0, rola 2d20 e mantém o menor; em testes de perícia, soma o bônus da perícia e modificadores informados.
+- O atributo-base é retirado da ficha quando informado. Caso esteja ausente, a extensão usa a tabela de perícias conhecida do sistema. Se ainda não for possível determinar o atributo, bloqueia a rolagem em vez de adivinhar.
+- Cada resultado informa os dados rolados, o dado escolhido, bônus, total e DT/sucesso/falha quando há dificuldade.
+- Os resultados são enviados a todos os participantes pelo canal oficial `OBR.broadcast`, aparecem no feed de resultados da própria extensão e geram uma notificação do Owlbear.
+
+**Limitação do chat:** o SDK atual do Owlbear não oferece uma função para inserir diretamente mensagens no histórico do chat nativo. Por isso, o resultado não é anunciado como uma mensagem nativa do chat; ele é transmitido pelo Broadcast da sala e exibido no feed da extensão. O Broadcast é efêmero e limitado a 16 KB.
+
+### Painel de Operação do Mestre
+
+A biblioteca da sala possui o botão **ABRIR PAINEL DE OPERAÇÃO DO MESTRE**. O painel lista Tokens da camada de personagens que possuem vínculo C.R.I.S., consulta cada ficha uma vez por lote e permite:
+
+- Pesquisar por nome do Token ou personagem.
+- Filtrar todos, vivos, incapacitados, feridos, com condições ou com erro.
+- Consultar PV, PE, SAN, Defesa, Iniciativa, condições e estado da sincronização.
+- Localizar o Token por `OBR.scene.items.getItemBounds` e `OBR.viewport.animateToBounds`.
+- Abrir o dossiê associado ao Token.
+- Forçar atualização do grupo. A consulta automática do painel é limitada a 30 segundos por ficha e é suspensa quando a interface fica oculta.
+
+Os indicadores de sincronização descrevem o resultado da última consulta, não uma garantia de conexão contínua.
+
+### Condições e marcadores no mapa
+
+A extensão reconhece condições somente se o documento consultado fornecer um array `conditions` com nomes e, opcionalmente, descrição, duração e origem. Ela não cria uma lista genérica de condições nem inventa efeitos.
+
+Quando condições estão presentes e os dados podem ser visualizados por aquele participante, a extensão desenha uma etiqueta local anexada ao Token. A etiqueta acompanha o Token, não recebe cliques e não modifica a arte original. Os itens são locais ao usuário que abriu a extensão; não são uma camada persistente de condições compartilhadas.
+
+A extensão ainda não adiciona ou remove condições na ficha: não foi identificada uma API oficial de escrita/autorização do C.R.I.S. para essa operação.
+
+### Histórico da sessão
+
+O histórico utiliza a metadata da cena sob a chave `com.onze1onze.sistema-cris/session-history` e guarda até 300 eventos recentes da sessão. Ele registra:
+
+- Rolagens recebidas pelo Broadcast.
+- Mudanças confirmadas de PV, PE e SAN detectadas em consultas ao C.R.I.S.
+- Condições adicionadas/removidas quando a estrutura remota oferece esses dados.
+- Horário, personagem, campo, valor anterior/novo e origem.
+
+O histórico é gravado pelo Mestre. Para persistir rolagens realizadas por jogadores, a extensão do Mestre precisa estar aberta e conectada à sala para receber o Broadcast e registrar o evento na metadata sincronizada. O canal Broadcast não entrega eventos retroativamente a quem entrou depois.
+
+### Combate e recursos
+
+A seção de combate mostra os valores e condições disponíveis. Dano, cura, perda/recuperação de SAN, alteração de PE, inventário editável e adicionar/remover condições permanecem bloqueados enquanto não houver uma operação de escrita oficial e autorizada do C.R.I.S. A interface não altera o cache para fingir que o C.R.I.S. confirmou uma operação. Não existe botão de desfazer remoto nesta versão.
+
+### Permissões
+
+O Painel do Mestre é restrito ao papel `GM` verificado pelo SDK do Owlbear. Rolagens podem ser iniciadas por quem tem acesso à ficha. Jogadores só recebem snapshots detalhados dos Tokens quando o Mestre ativa o compartilhamento já existente. Os dados transmitidos nas rolagens identificam personagem e jogador; não incluem o restante da ficha.
+
 ## Desenvolvimento local
 
 Requisitos: Node.js 22+ e npm.
@@ -164,6 +217,10 @@ Manifesto publicado: `https://onze1onze.github.io/Sistema-Cris/manifest.json`.
 - `src/cris/crisEvents.ts`: declara os transportes remotos documentados e configura polling conservador.
 - `src/cris/crisWrite.ts`: matriz explícita de capacidades de escrita; PV, PE e SAN ficam bloqueados até haver autorização verificável.
 - `src/cris/crisConflict.ts`: pré-verificação de conflitos para uma possível integração de escrita futura.
+- `src/rolls/`: tipos genéricos de rolagem, motor d20 e construção de testes de atributo/perícia.
+- `src/master-panel/`: lista de Tokens vinculados, filtros, consulta e localização.
+- `src/conditions/`: marcadores locais anexados aos Tokens quando a ficha fornece condições.
+- `src/history/`: histórico limitado de eventos da sessão na metadata da cena.
 - `src/cris/crisTypes.ts`: tipos dos dados exibidos.
 - `src/owlbear/`: integração SDK, metadata, menu contextual e vínculo com Tokens.
 - `src/storage/`: cache local.

@@ -21,11 +21,17 @@ import {
   syncSharedSnapshotsForSheet,
   unbindAllTokensForSheet,
 } from "../owlbear/tokenBinding";
+import { buildAttributeRollRequest, buildSkillRollRequest, formatRollSummary, performRoll, ROLL_CHANNEL, type RollRequest, type RollResult } from "../rolls/rollService";
+import type { RollBroadcastMessage } from "../rolls/rollTypes";
+import { appendSessionEvent, getSessionHistory, SESSION_HISTORY_KEY, type SessionEvent } from "../history/sessionHistory";
+import { loadMasterRoster, locateToken, type MasterRosterEntry } from "../master-panel/masterPanel";
+import { matchesRosterFilter, type RosterFilter } from "../master-panel/rosterFilters";
+import { syncConditionMarkers } from "../conditions/conditionMarkers";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const PAGES_BASE = "/Sistema-Cris/";
 
-type ViewTab = "overview" | "combat" | "skills" | "gear" | "settings";
+type ViewTab = "overview" | "combat" | "skills" | "gear" | "history" | "settings";
 
 interface SyncHistoryEntry extends ResourceDelta {
   source: "C.R.I.S.";
@@ -34,7 +40,7 @@ interface SyncHistoryEntry extends ResourceDelta {
 
 interface AppState {
   role: "GM" | "PLAYER";
-  mode: "library" | "token" | "bind";
+  mode: "library" | "token" | "bind" | "master";
   tokenId?: string;
   token?: SceneItem;
   binding?: TokenBinding;
@@ -47,6 +53,19 @@ interface AppState {
   lastSyncAt?: number;
   syncHistory: SyncHistoryEntry[];
   pollIntervalMs: number;
+  pendingRoll?: RollRequest;
+  rolling: boolean;
+  rollResults: RollResult[];
+  masterRoster: MasterRosterEntry[];
+  masterBusy: boolean;
+  masterFilter: RosterFilter;
+  masterQuery: string;
+  sessionEvents: SessionEvent[];
+  historyCharacterFilter: string;
+  historyKindFilter: string;
+  historySourceFilter: string;
+  historyFromTime: string;
+  historyToTime: string;
   toast?: { message: string; kind: "success" | "warning" | "error" | "info" };
   busy: boolean;
 }
@@ -131,15 +150,16 @@ function renderHeader(state: AppState): string {
     <div class="brand-copy"><div class="micro-label">ORDEM REALITAS // ARQUIVO DIGITAL</div><div class="brand-title">SISTEMA <b>C.R.I.S.</b></div></div>
     <div class="header-stamp"><span class="status-light"></span><span>${modeLabel}</span></div>
   </header>
-  <div class="subbar"><span>REGISTRO DE AGENTES</span><span>///</span><span>INTERFACE DE CAMPO v1.1</span></div>`;
+  <div class="subbar"><span>REGISTRO DE AGENTES</span><span>///</span><span>INTERFACE DE CAMPO v1.3</span></div>`;
 }
 
-function renderNavigation(active: ViewTab): string {
+function renderNavigation(active: ViewTab, role: AppState["role"]): string {
   const tabs: Array<[ViewTab, string, string]> = [
     ["overview", "◈", "PERSONAGEM"],
     ["combat", "⚔", "COMBATE"],
     ["gear", "▤", "EQUIPAMENTO"],
     ["skills", "✦", "PERÍCIAS"],
+    ...(role === "GM" ? [["history", "◷", "HISTÓRICO"] as [ViewTab, string, string]] : []),
     ["settings", "⚙", "ARQUIVO"],
   ];
   return `<nav class="tabs" aria-label="Seções da ficha">${tabs.map(([key, icon, title]) =>
@@ -160,17 +180,38 @@ function renderAttributes(sheet: CharacterSheet): string {
   const attributes = sheet.attributes;
   if (!attributes || !Object.keys(attributes).length) return `<p class="muted-note">Atributos não informados.</p>`;
   return `<div class="attribute-grid">${(["AGI", "FOR", "INT", "PRE", "VIG"] as const).filter((key) => attributes[key] !== undefined).map((key) =>
-    `<div class="attribute"><span>${key}</span><strong>${escapeHtml(attributes[key])}</strong></div>`
+    `<button class="attribute roll-trigger" data-action="start-attribute-roll" data-attribute="${key}" title="Rolar ${key}"><span>${key}</span><strong>${escapeHtml(attributes[key])}</strong><small>🎲 ROLAR</small></button>`
   ).join("")}</div>`;
 }
 
 function renderSkills(sheet: CharacterSheet, limit?: number): string {
-  const list = limit ? sheet.skills?.slice(0, limit) : sheet.skills;
-  if (!list?.length) return `<p class="muted-note">Nenhuma perícia encontrada nesta ficha.</p>`;
-  return `<div class="data-list">${list.map((skill) => {
-    const bonus = typeof skill.bonus === "number" && skill.bonus > 0 ? `+${skill.bonus}` : display(skill.bonus, "—");
-    return `<div class="data-row"><span class="data-icon">⌁</span><div class="data-copy"><strong>${display(skill.name)}</strong><small>${display(skill.attribute, "ATRIBUTO N/D")}${skill.training ? ` · ${display(skill.training)}` : ""}</small></div><b class="data-value">${bonus}</b></div>`;
+  const skills = sheet.skills ?? [];
+  const list = limit ? skills.slice(0, limit) : skills;
+  if (!list.length) return `<p class="muted-note">Nenhuma perícia encontrada nesta ficha.</p>`;
+  return `<div class="data-list roll-list">${list.map((skill) => {
+    const index = skills.indexOf(skill);
+    const bonus = typeof skill.bonus === "number" && skill.bonus > 0
+      ? `+${skill.bonus}`
+      : display(skill.bonus, "0");
+    const attribute = skill.attribute ?? "ATRIBUTO AUTOMÁTICO";
+    return `<button class="data-row roll-row" data-action="start-skill-roll" data-skill-index="${index}" title="Rolar ${display(skill.name)}">
+      <span class="data-icon">🎲</span>
+      <span class="data-copy"><strong>${display(skill.name)}</strong><small>${display(attribute)} · BÔNUS ${bonus}</small></span>
+      <b class="data-value">${bonus}</b>
+    </button>`;
   }).join("")}</div>`;
+}
+
+function renderConditions(sheet: CharacterSheet): string {
+  if (!sheet.conditions?.length) return `<p class="muted-note">Nenhuma condição foi fornecida no documento consultado do C.R.I.S.</p>`;
+  return `<div class="condition-list">${sheet.conditions.map((condition) => `
+    <article class="condition-card">
+      <span class="condition-glyph">⚠</span>
+      <div><strong>${display(condition.name)}</strong>
+        ${condition.description ? `<p>${display(condition.description)}</p>` : ""}
+        <small>${[condition.duration ? `DURAÇÃO: ${condition.duration}` : "", condition.source ? `ORIGEM: ${condition.source}` : ""].filter(Boolean).map(escapeHtml).join(" · ") || "DADOS CONFORME DOCUMENTO DO C.R.I.S."}</small>
+      </div>
+    </article>`).join("")}</div>`;
 }
 
 function renderInventory(sheet: CharacterSheet): string {
@@ -198,6 +239,7 @@ function renderOverview(sheet: CharacterSheet): string {
     <section class="section-block"><div class="section-title"><span>01</span><h2>RECURSOS VITAIS</h2><i></i></div>${renderResourceGrid(sheet)}</section>
     <section class="section-block"><div class="section-title"><span>02</span><h2>ATRIBUTOS</h2><i></i></div>${renderAttributes(sheet)}</section>
     <section class="section-block"><div class="section-title"><span>03</span><h2>PERÍCIAS EM DESTAQUE</h2><i></i></div>${renderSkills(sheet, 5)}</section>
+    <section class="section-block"><div class="section-title"><span>04</span><h2>CONDIÇÕES ATUAIS</h2><i></i></div>${renderConditions(sheet)}</section>
     ${identity.description ? `<section class="note-card"><div class="micro-label">OBSERVAÇÕES DO AGENTE</div><p>${display(identity.description)}</p></section>` : ""}`;
 }
 
@@ -210,10 +252,87 @@ function renderCombat(sheet: CharacterSheet): string {
   return `<section class="section-block"><div class="section-title"><span>04</span><h2>PARÂMETROS DE COMBATE</h2><i></i></div>
     <div class="combat-grid">${fields.filter(([, value]) => value !== undefined).map(([label, value]) => `<div class="combat-stat"><small>${label}</small><strong>${display(value)}</strong></div>`).join("") || `<p class="muted-note">Parâmetros de combate não informados.</p>`}</div>
     ${combat?.resistances?.length ? `<div class="note-card"><div class="micro-label">RESISTÊNCIAS</div><p>${combat.resistances.map(escapeHtml).join(" · ")}</p></div>` : ""}
+    <div class="combat-action-locked"><strong>AÇÕES RÁPIDAS</strong><p>Dano, cura e perda de SAN ainda não podem ser enviados ao C.R.I.S. por falta de uma API de escrita autorizada. Os recursos permanecem somente leitura.</p><button class="button secondary full" disabled title="Aguardando mecanismo oficial de escrita do C.R.I.S.">APLICAR DANO / CURA — INDISPONÍVEL</button></div>
     </section>
-    <section class="section-block"><div class="section-title"><span>05</span><h2>ARMAS E ATAQUES</h2><i></i></div>
+    <section class="section-block"><div class="section-title"><span>05</span><h2>CONDIÇÕES ATUAIS</h2><i></i></div>${renderConditions(sheet)}</section>
+    <section class="section-block"><div class="section-title"><span>06</span><h2>ARMAS E ATAQUES</h2><i></i></div>
       ${combat?.attacks?.length ? `<div class="data-list">${combat.attacks.map((attack) => `<article class="detail-row"><strong>${display(attack.name)}</strong><small>${[attack.test, attack.damage, attack.critical, attack.range].filter(Boolean).map(escapeHtml).join(" · ")}</small>${attack.effects ? `<p>${display(attack.effects)}</p>` : ""}</article>`).join("")}</div>` : `<p class="muted-note">Nenhum ataque importado.</p>`}
     </section>`;
+}
+
+function renderHistory(state: AppState): string {
+  const characters = [...new Set(state.sessionEvents.map((event) => event.characterName))].sort();
+  const filtered = state.sessionEvents.filter((event) => {
+    const eventTime = new Date(event.at).toTimeString().slice(0, 5);
+    return (!state.historyCharacterFilter || event.characterName === state.historyCharacterFilter)
+      && (!state.historyKindFilter || event.kind === state.historyKindFilter)
+      && (!state.historySourceFilter || event.source === state.historySourceFilter)
+      && (!state.historyFromTime || eventTime >= state.historyFromTime)
+      && (!state.historyToTime || eventTime <= state.historyToTime);
+  }).slice().reverse();
+  const kindLabel: Record<SessionEvent["kind"], string> = {
+    ROLL_COMPLETED: "ROLAGEM",
+    RESOURCE_CHANGED: "RECURSO",
+    CONDITION_ADDED: "CONDIÇÃO ADICIONADA",
+    CONDITION_REMOVED: "CONDIÇÃO REMOVIDA",
+    CHARACTER_UPDATED: "FICHA ATUALIZADA",
+    SYNC_ERROR: "ERRO DE SINCRONIZAÇÃO",
+  };
+  return `<section class="section-block"><div class="section-title"><span>14</span><h2>HISTÓRICO DA SESSÃO</h2><i></i><b>${filtered.length.toString().padStart(2, "0")}</b></div>
+    <div class="history-filters">
+      <select id="history-character"><option value="">TODOS OS PERSONAGENS</option>${characters.map((name) => `<option value="${escapeHtml(name)}" ${state.historyCharacterFilter === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
+      <select id="history-kind"><option value="">TODOS OS EVENTOS</option>${Object.entries(kindLabel).map(([key, label]) => `<option value="${key}" ${state.historyKindFilter === key ? "selected" : ""}>${label}</option>`).join("")}</select>
+      <select id="history-source">
+        <option value="">TODAS AS ORIGENS</option>
+        <option value="Owlbear" ${state.historySourceFilter === "Owlbear" ? "selected" : ""}>OWLBEAR</option>
+        <option value="C.R.I.S." ${state.historySourceFilter === "C.R.I.S." ? "selected" : ""}>C.R.I.S.</option>
+        <option value="Jogador" ${state.historySourceFilter === "Jogador" ? "selected" : ""}>JOGADOR</option>
+        <option value="Sistema" ${state.historySourceFilter === "Sistema" ? "selected" : ""}>SISTEMA</option>
+      </select>
+      <label class="history-time-filter"><small>DE</small><input type="time" id="history-from" value="${escapeHtml(state.historyFromTime)}"></label>
+      <label class="history-time-filter"><small>ATÉ</small><input type="time" id="history-to" value="${escapeHtml(state.historyToTime)}"></label>
+    </div>
+    ${filtered.length ? `<div class="session-event-list">${filtered.map((event) => `
+      <article class="session-event">
+        <div class="event-time">${new Date(event.at).toLocaleTimeString("pt-BR")}</div>
+        <div class="event-main"><strong>${display(event.characterName)}</strong><small>${kindLabel[event.kind] ?? event.kind}</small>
+          ${event.field ? `<p>${display(event.field)} ${event.before !== undefined ? `${escapeHtml(event.before)} → ${display(event.after)}` : display(event.after)}</p>` : ""}
+          ${event.detail ? `<p>${display(event.detail)}</p>` : ""}
+          <small>ORIGEM: ${display(event.source)}</small>
+        </div>
+      </article>`).join("")}</div>` : `<div class="empty-state"><strong>NENHUM EVENTO REGISTRADO</strong><p>Rolagens e mudanças remotas aparecerão aqui durante a sessão.</p></div>`}
+  </section>`;
+}
+
+function renderRollFeed(state: AppState): string {
+  if (!state.rollResults.length) return "";
+  return `<section class="roll-feed"><div class="section-title"><span>🎲</span><h2>RESULTADOS DA MESA</h2><i></i></div>
+    ${state.rollResults.slice(0, 5).map((result) => `
+      <article class="roll-result-card">
+        <div class="roll-result-top"><strong>${display(result.characterName)}</strong><small>${display(result.label)}</small></div>
+        <div class="roll-result-value">${result.total}</div>
+        <p>${escapeHtml(result.dice.join(" · "))} → ${result.chosenDie} ${result.totalBonus >= 0 ? "+" : "−"} ${Math.abs(result.totalBonus)}</p>
+        <small>${result.difficulty !== undefined ? `DT ${result.difficulty} · ` : ""}${result.outcome === "SUCCESS" ? "SUCESSO" : result.outcome === "FAILURE" ? "FALHA" : "SEM DT"} · ${new Date(result.completedAt).toLocaleTimeString("pt-BR")}</small>
+      </article>`).join("")}
+    <p class="footnote">Resultados distribuídos aos participantes pelo canal de mensagens da extensão. O SDK não oferece escrita no chat nativo do Owlbear.</p>
+  </section>`;
+}
+
+function renderRollDialog(state: AppState): string {
+  const request = state.pendingRoll;
+  if (!request) return "";
+  return `<div class="roll-dialog-backdrop" role="presentation">
+    <section class="roll-dialog" role="dialog" aria-modal="true" aria-labelledby="roll-dialog-title">
+      <div class="micro-label">SISTEMA DE TESTES // ORDEM PARANORMAL</div>
+      <h2 id="roll-dialog-title">ROLAR ${display(request.label).toUpperCase()}</h2>
+      <p class="roll-dialog-formula">${request.attributeValue === 0 ? "2d20 · escolher o menor" : `${request.attributeValue}d20 · escolher o maior`} ${request.skillBonus === 0 ? "" : request.skillBonus > 0 ? `+ ${request.skillBonus}` : `− ${Math.abs(request.skillBonus)}`} ${request.attribute ? `· ${request.attribute}` : ""}</p>
+      ${state.rolling ? `<div class="rolling-animation"><div class="die-cube">D20</div><strong>ROLANDO...</strong></div>` : `<label class="field-label" for="roll-dt">DIFICULDADE (DT) — OPCIONAL</label>
+      <input id="roll-dt" class="roll-input" type="number" min="0" step="1" placeholder="Deixe vazio para rolagem aberta">
+      <label class="field-label" for="roll-modifier">MODIFICADOR ADICIONAL — OPCIONAL</label>
+      <input id="roll-modifier" class="roll-input" type="number" step="1" value="0">
+      <div class="roll-dialog-actions"><button class="button secondary" data-action="cancel-roll">CANCELAR</button><button class="button primary" data-action="confirm-roll">ROLAR D20</button></div>`}
+    </section>
+  </div>`;
 }
 
 function renderGear(sheet: CharacterSheet): string {
@@ -273,8 +392,9 @@ function renderSheetContent(state: AppState): string {
   switch (state.activeTab) {
     case "overview": return renderOverview(state.sheet);
     case "combat": return renderCombat(state.sheet);
-    case "skills": return `<section class="section-block"><div class="section-title"><span>12</span><h2>TODAS AS PERÍCIAS IMPORTADAS</h2><i></i></div>${renderSkills(state.sheet)}</section>`;
+    case "skills": return `<section class="section-block"><div class="section-title"><span>12</span><h2>TODAS AS PERÍCIAS</h2><i></i></div>${renderSkills(state.sheet)}</section>`;
     case "gear": return renderGear(state.sheet);
+    case "history": return state.role === "GM" ? renderHistory(state) : renderOverview(state.sheet);
     case "settings": return renderSettings(state);
   }
 }
@@ -319,9 +439,70 @@ function renderLibraryCard(reference: CrisSheetReference, sheet: CharacterSheet 
   </article>`;
 }
 
+function renderMasterPanel(state: AppState): string {
+  const query = state.masterQuery.trim().toLocaleLowerCase("pt-BR");
+  const entries = state.masterRoster.filter((entry) =>
+    matchesRosterFilter(entry, state.masterFilter)
+    && (!query || entry.tokenName.toLocaleLowerCase("pt-BR").includes(query)
+      || entry.sheet?.identity.name.toLocaleLowerCase("pt-BR").includes(query)),
+  );
+  const statusLabels = {
+    SYNCED: "SINCRONIZADO",
+    SYNCING: "SINCRONIZANDO",
+    OFFLINE: "OFFLINE",
+    ERROR: "ERRO",
+  } as const;
+  const resource = (entry: MasterRosterEntry, key: "pv" | "pe" | "san") => {
+    const value = entry.sheet?.resources?.[key];
+    return value ? `${value.current}/${value.max}` : "—";
+  };
+  return `<section class="master-panel">
+    <div class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">CENTRAL DE OPERAÇÕES // MESTRE</div><h1>PAINEL DO GRUPO</h1><p>${state.masterRoster.length} Token(s) com ficha C.R.I.S. nesta cena</p></div>
+    <div class="master-controls">
+      <input id="roster-search" type="search" placeholder="Pesquisar personagem ou Token..." value="${escapeHtml(state.masterQuery)}">
+      <select id="roster-filter">
+        <option value="ALL" ${state.masterFilter === "ALL" ? "selected" : ""}>TODOS</option>
+        <option value="ALIVE" ${state.masterFilter === "ALIVE" ? "selected" : ""}>VIVOS</option>
+        <option value="INCAPACITATED" ${state.masterFilter === "INCAPACITATED" ? "selected" : ""}>INCAPACITADOS</option>
+        <option value="INJURED" ${state.masterFilter === "INJURED" ? "selected" : ""}>FERIDOS</option>
+        <option value="CONDITIONS" ${state.masterFilter === "CONDITIONS" ? "selected" : ""}>COM CONDIÇÕES</option>
+        <option value="ERROR" ${state.masterFilter === "ERROR" ? "selected" : ""}>COM ERRO</option>
+      </select>
+      <button class="button secondary full" data-action="refresh-roster" ${state.masterBusy ? "disabled" : ""}>↻ ATUALIZAR GRUPO</button>
+    </div>
+    ${state.masterBusy ? `<div class="master-loading">CONSULTANDO FICHAS VINCULADAS...</div>` : ""}
+    ${entries.length ? `<div class="master-roster-list">${entries.map((entry) => {
+      const pv = entry.sheet?.resources?.pv;
+      const healthState = pv && pv.current <= 0 ? "incapacitado" : pv && pv.current < pv.max ? "ferido" : "estavel";
+      const conditions = entry.sheet?.conditions ?? [];
+      return `<article class="master-roster-card ${healthState}">
+        <div class="master-card-head"><div><strong>${display(entry.sheet?.identity.name ?? entry.tokenName)}</strong><small>TOKEN: ${display(entry.tokenName)}</small></div>
+          <span class="roster-status ${entry.status.toLowerCase()}">${statusLabels[entry.status]}</span>
+        </div>
+        <div class="master-vitals">
+          <span>PV <b>${resource(entry, "pv")}</b></span>
+          <span>PE <b>${resource(entry, "pe")}</b></span>
+          <span>SAN <b>${resource(entry, "san")}</b></span>
+        </div>
+        <div class="master-subline">DEF ${display(entry.sheet?.combat?.defense)} · INI ${display(entry.sheet?.combat?.initiative)}</div>
+        ${conditions.length ? `<div class="master-conditions">${conditions.map((condition) => `<span>⚠ ${display(condition.name)}</span>`).join("")}</div>` : ""}
+        ${entry.error ? `<p class="master-error">${display(entry.error)}</p>` : ""}
+        <small class="master-sync-time">ÚLTIMA CONSULTA: ${entry.lastSyncAt ? new Date(entry.lastSyncAt).toLocaleTimeString("pt-BR") : "NÃO CONSULTADA"}</small>
+        <div class="master-card-actions">
+          <button class="mini-button" data-action="locate-token" data-token-id="${escapeHtml(entry.tokenId)}">LOCALIZAR</button>
+          <button class="mini-button" data-action="open-roster-token" data-token-id="${escapeHtml(entry.tokenId)}">ABRIR FICHA</button>
+        </div>
+      </article>`;
+    }).join("")}</div>` : `<div class="empty-state"><strong>NENHUM PERSONAGEM ENCONTRADO</strong><p>${state.masterRoster.length ? "Nenhum personagem corresponde ao filtro." : "Vincule fichas C.R.I.S. aos Tokens para preencher o painel."}</p></div>`}
+    <div class="master-write-note"><strong>CONTROLES DE RECURSOS</strong><p>PV, PE e SAN continuam somente leitura. A API oficial de escrita do C.R.I.S. não foi confirmada; dano e cura não serão simulados.</p></div>
+    ${renderHistory(state)}
+  </section>`;
+}
+
 function renderLibrary(state: AppState): string {
   const cards = state.library.map((reference) => renderLibraryCard(reference, persistence.get(reference.id), state)).join("");
-  return `<section class="connect-panel">
+  return `${state.role === "GM" ? `<button class="button secondary full master-open-button" data-action="master-panel">▦ ABRIR PAINEL DE OPERAÇÃO DO MESTRE</button>` : ""}
+  <section class="connect-panel">
       <div class="connect-intro"><div class="cris-emblem"><span>✦</span><strong>C.R.I.S.</strong><small>CONEXÃO EXTERNA</small></div>
         <div><div class="micro-label">PROTOCOLO DE ACESSO</div><h1>Conecte sua ficha do C.R.I.S.</h1><p>Cole o link público. A extensão consulta e importa os dados automaticamente.</p></div>
       </div>
@@ -334,10 +515,37 @@ function renderLibrary(state: AppState): string {
 }
 
 function renderApp(state: AppState): string {
-  const title = state.mode === "library" ? "ARQUIVO DA SALA" : state.mode === "bind" ? "VINCULAR TOKEN" : "DOSSIÊ DO AGENTE";
+  const title = state.mode === "library" ? "ARQUIVO DA SALA"
+    : state.mode === "bind" ? "VINCULAR TOKEN"
+    : state.mode === "master" ? "PAINEL DO MESTRE"
+    : "DOSSIÊ DO AGENTE";
   const header = renderHeader(state);
-  const body = state.mode === "library" ? renderLibrary(state) : state.sheet ? `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title} ${state.token ? `// ${escapeHtml(state.token.name ?? "TOKEN")}` : ""}</div><h1>Ficha do Personagem</h1><p>Registro de campo associado ao C.R.I.S.</p></section>${renderNavigation(state.activeTab)}<main class="sheet-content">${renderSheetContent(state)}</main>` : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title}</div><h1>Vincular ficha ao Token</h1><p>${escapeHtml(state.token?.name ?? "Token selecionado")}</p></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
-  return `<div class="app-shell">${header}<main class="content">${renderSyncBanner(state)}${body}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.2.0 · ${state.role}</span></footer></div>`;
+  const body = state.mode === "library"
+    ? renderLibrary(state)
+    : state.mode === "master"
+      ? renderMasterPanel(state)
+      : state.sheet
+        ? `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title} ${state.token ? `// ${escapeHtml(state.token.name ?? "TOKEN")}` : ""}</div><h1>Ficha do Personagem</h1><p>Registro de campo associado ao C.R.I.S.</p></section>${renderNavigation(state.activeTab, state.role)}<main class="sheet-content">${renderSheetContent(state)}</main>`
+        : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title}</div><h1>Vincular ficha ao Token</h1><p>${escapeHtml(state.token?.name ?? "Token selecionado")}</p></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
+  return `<div class="app-shell">${header}<main class="content">${renderSyncBanner(state)}${body}${state.mode === "token" || state.mode === "master" ? renderRollFeed(state) : ""}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.3.0 · ${state.role}</span></footer>${renderRollDialog(state)}</div>`;
+}
+
+function parseRollBroadcast(value: unknown): RollBroadcastMessage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const message = value as Partial<RollBroadcastMessage>;
+  if (message.version !== 1 || message.type !== "ROLL_COMPLETED" || !message.result) return undefined;
+  const result = message.result as Partial<RollResult>;
+  if (typeof result.id !== "string" || typeof result.characterId !== "string"
+    || typeof result.characterName !== "string" || typeof result.rollerName !== "string"
+    || typeof result.label !== "string" || typeof result.total !== "number"
+    || typeof result.chosenDie !== "number" || typeof result.totalBonus !== "number"
+    || !Array.isArray(result.dice) || !result.dice.every((die) => typeof die === "number" && Number.isFinite(die))
+    || typeof result.completedAt !== "number") return undefined;
+  return message as RollBroadcastMessage;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 export class CrisApp {
@@ -347,14 +555,28 @@ export class CrisApp {
   private pollTimer?: number;
   private syncInFlight = false;
   private unsubscribeSceneItems?: () => void;
+  private unsubscribeBroadcast?: () => void;
+  private unsubscribeHistory?: () => void;
+  private masterTimer?: number;
+  private masterInFlight = false;
   private readonly visibilityHandler = (): void => {
-    if (document.hidden) this.stopPolling();
-    else this.startPolling();
+    if (document.hidden) {
+      this.stopPolling();
+      this.stopMasterPolling();
+    } else {
+      this.startPolling();
+      this.startMasterPolling();
+    }
   };
   private readonly pageHideHandler = (): void => {
     this.stopPolling();
     this.unsubscribeSceneItems?.();
     this.unsubscribeSceneItems = undefined;
+    this.unsubscribeBroadcast?.();
+    this.unsubscribeBroadcast = undefined;
+    this.unsubscribeHistory?.();
+    this.unsubscribeHistory = undefined;
+    this.stopMasterPolling();
     document.removeEventListener("visibilitychange", this.visibilityHandler);
     window.removeEventListener("pagehide", this.pageHideHandler);
   };
@@ -363,7 +585,7 @@ export class CrisApp {
     this.root = element;
     const query = new URLSearchParams(window.location.search);
     const modeParam = query.get("mode");
-    const mode: AppState["mode"] = modeParam === "token" ? "token" : modeParam === "bind" ? "bind" : "library";
+    const mode: AppState["mode"] = modeParam === "token" ? "token" : modeParam === "bind" ? "bind" : modeParam === "master" ? "master" : "library";
     this.state = {
       role: "PLAYER",
       mode,
@@ -374,6 +596,18 @@ export class CrisApp {
       syncStatus: "SYNCED",
       syncHistory: [],
       pollIntervalMs: readSyncInterval(),
+      rolling: false,
+      rollResults: [],
+      masterRoster: [],
+      masterBusy: false,
+      masterFilter: "ALL",
+      masterQuery: "",
+      sessionEvents: [],
+      historyCharacterFilter: "",
+      historyKindFilter: "",
+      historySourceFilter: "",
+      historyFromTime: "",
+      historyToTime: "",
       busy: false,
     };
     this.root.addEventListener("click", (event) => void this.handleClick(event));
@@ -391,11 +625,49 @@ export class CrisApp {
       this.render();
       return;
     }
+    if (this.state.mode === "master" && this.state.role !== "GM") {
+      this.state.mode = "library";
+      this.toast("O painel de operação é exclusivo do Mestre.", "warning");
+    }
     await this.reloadRoomData();
+    const session = await getSessionHistory();
+    this.state.sessionEvents = session.events;
+    this.unsubscribeHistory = OBR.scene.onMetadataChange((metadata) => {
+      const value = metadata[SESSION_HISTORY_KEY] as { version?: number; events?: SessionEvent[] } | undefined;
+      if (value?.version === 1 && Array.isArray(value.events)) {
+        this.state.sessionEvents = value.events;
+        if (this.state.activeTab === "history" || this.state.mode === "master") this.render();
+      }
+    });
+    this.unsubscribeBroadcast = OBR.broadcast.onMessage(ROLL_CHANNEL, (event) => {
+      const message = parseRollBroadcast(event.data);
+      if (!message || this.state.rollResults.some((result) => result.id === message.result.id)) return;
+      this.state.rollResults = [message.result, ...this.state.rollResults].slice(0, 12);
+      if (this.state.role === "GM") {
+        void appendSessionEvent({
+          characterId: message.result.characterId,
+          characterName: message.result.characterName,
+          tokenId: message.result.tokenId,
+          kind: "ROLL_COMPLETED",
+          field: message.result.label,
+          after: message.result.total,
+          source: "Jogador",
+          detail: `Rolagem de ${message.result.rollerName} · ${formatRollSummary(message.result)}`,
+          at: message.result.completedAt,
+        }).then(() => this.refreshSessionEvents());
+      }
+      this.render();
+    });
     this.unsubscribeSceneItems = OBR.scene.items.onChange((items) => this.handleSceneItemsChanged(items));
     await registerContextMenu();
+    await syncConditionMarkers(this.state.role);
     this.render();
-    this.startPolling();
+    if (this.state.mode === "master") {
+      await this.refreshMasterRoster(false);
+      this.startMasterPolling();
+    } else {
+      this.startPolling();
+    }
   }
 
   private async reloadRoomData(): Promise<void> {
@@ -431,6 +703,7 @@ export class CrisApp {
       const cached = this.state.sheet;
       try {
         const result = await connectCrisLink(binding.sourceUrl);
+        await this.recordRemoteSheetChanges(cached, result.sheet);
         persistence.save(result.sheet);
         this.state.sheet = result.sheet;
         this.state.lastSyncAt = Date.now();
@@ -449,6 +722,7 @@ export class CrisApp {
             this.state.binding = await this.getUpdatedBinding();
           }
           this.state.library = (await getRoomLibrary()).sheets;
+          await syncConditionMarkers("GM");
         }
       } catch (error) {
         this.state.syncStatus = isCrisNetworkFailure(error) ? "OFFLINE" : "ERROR";
@@ -574,6 +848,7 @@ export class CrisApp {
       ].slice(0, 30);
     }
     persistence.save(reconciliation.sheet);
+    void syncConditionMarkers(this.state.role);
     this.render();
   }
 
@@ -589,6 +864,7 @@ export class CrisApp {
         this.state.token = undefined;
         this.state.mode = "library";
         this.stopPolling();
+        void syncConditionMarkers(this.state.role);
         this.toast("O Token vinculado foi removido da cena. A associação local foi encerrada.", "warning");
       }
       return;
@@ -602,6 +878,7 @@ export class CrisApp {
         this.state.reference = undefined;
         this.stopPolling();
         this.state.syncStatus = "ERROR";
+        void syncConditionMarkers(this.state.role);
         this.toast("O vínculo desta ficha foi removido do Token.", "warning");
       }
       return;
@@ -620,6 +897,7 @@ export class CrisApp {
     if (this.state.role === "PLAYER" && !nextBinding.shareWithPlayers) {
       this.state.sheet = undefined;
       persistence.remove(nextBinding.sheetId);
+      void syncConditionMarkers(this.state.role);
       this.render();
       return;
     }
@@ -627,6 +905,7 @@ export class CrisApp {
     if (nextBinding.snapshot) {
       this.applyIncomingSnapshot(nextBinding.snapshot);
     }
+    void syncConditionMarkers(this.state.role);
   }
 
   private async syncRemoteSheet(manual: boolean): Promise<void> {
@@ -664,6 +943,7 @@ export class CrisApp {
 
       if (reconciliation.changed) {
         const deltas = diffResourceValues(cached?.resources, result.sheet.resources);
+        await this.recordRemoteSheetChanges(cached, reconciliation.sheet);
         this.state.sheet = reconciliation.sheet;
         persistence.save(reconciliation.sheet);
         this.state.syncStatus = "REMOTE_CHANGE";
@@ -682,6 +962,7 @@ export class CrisApp {
         this.state.reference = updatedReference;
         await upsertRoomSheet(updatedReference);
         await syncSharedSnapshotsForSheet(reference.id, reconciliation.sheet);
+        await syncConditionMarkers("GM");
         this.state.library = (await getRoomLibrary()).sheets;
       } else {
         if (!this.state.sheet && reconciliation.sheet) {
@@ -704,6 +985,21 @@ export class CrisApp {
       }
     } catch (error) {
       this.state.syncStatus = isCrisNetworkFailure(error) ? "OFFLINE" : "ERROR";
+      if (this.state.reference?.id === reference.id && this.state.role === "GM") {
+        try {
+          await appendSessionEvent({
+            characterId: reference.id,
+            characterName: cached?.identity.name ?? reference.name,
+            tokenId: this.state.tokenId,
+            kind: "SYNC_ERROR",
+            source: "Sistema",
+            detail: error instanceof Error ? error.message : "Falha ao consultar o C.R.I.S.",
+          });
+          await this.refreshSessionEvents();
+        } catch {
+          // A falha de auditoria não deve encobrir a falha da consulta principal.
+        }
+      }
       if (manual) {
         this.toast(
           cached
@@ -718,6 +1014,178 @@ export class CrisApp {
       this.syncInFlight = false;
       if (manual) this.setBusy(false);
     }
+  }
+
+  private async refreshSessionEvents(): Promise<void> {
+    try {
+      const history = await getSessionHistory();
+      this.state.sessionEvents = history.events;
+      if (this.state.activeTab === "history" || this.state.mode === "master") this.render();
+    } catch (error) {
+      console.warn("Sistema C.R.I.S. — não foi possível atualizar o histórico da cena", error);
+    }
+  }
+
+  private async recordRemoteSheetChanges(previous: CharacterSheet | undefined, incoming: CharacterSheet): Promise<void> {
+    if (!previous) return;
+    const deltas = diffResourceValues(previous.resources, incoming.resources);
+    for (const delta of deltas) {
+      await appendSessionEvent({
+        characterId: incoming.id,
+        characterName: incoming.identity.name,
+        tokenId: this.state.tokenId,
+        kind: "RESOURCE_CHANGED",
+        field: delta.resource.toUpperCase(),
+        before: delta.previous,
+        after: delta.current,
+        source: "C.R.I.S.",
+      });
+    }
+
+    const beforeConditions = new Map((previous.conditions ?? []).map((condition) => [condition.name.toLocaleLowerCase("pt-BR"), condition]));
+    const afterConditions = new Map((incoming.conditions ?? []).map((condition) => [condition.name.toLocaleLowerCase("pt-BR"), condition]));
+    for (const [key, condition] of afterConditions) {
+      if (!beforeConditions.has(key)) {
+        await appendSessionEvent({
+          characterId: incoming.id,
+          characterName: incoming.identity.name,
+          tokenId: this.state.tokenId,
+          kind: "CONDITION_ADDED",
+          field: condition.name,
+          source: "C.R.I.S.",
+          detail: condition.description ?? condition.duration,
+        });
+      }
+    }
+    for (const [key, condition] of beforeConditions) {
+      if (!afterConditions.has(key)) {
+        await appendSessionEvent({
+          characterId: incoming.id,
+          characterName: incoming.identity.name,
+          tokenId: this.state.tokenId,
+          kind: "CONDITION_REMOVED",
+          field: condition.name,
+          source: "C.R.I.S.",
+        });
+      }
+    }
+    if (deltas.length || beforeConditions.size !== afterConditions.size) await this.refreshSessionEvents();
+  }
+
+  private async refreshMasterRoster(force: boolean): Promise<void> {
+    if (this.state.role !== "GM" || this.masterInFlight) return;
+    this.masterInFlight = true;
+    this.state.masterBusy = true;
+    if (this.state.mode === "master") this.render();
+    try {
+      this.state.masterRoster = await loadMasterRoster(force);
+      await syncConditionMarkers(this.state.role);
+      await this.refreshSessionEvents();
+    } catch (error) {
+      this.toast(error instanceof Error ? error.message : "Não foi possível carregar o painel do grupo.", "error");
+    } finally {
+      this.masterInFlight = false;
+      this.state.masterBusy = false;
+      if (this.state.mode === "master") this.render();
+    }
+  }
+
+  private startMasterPolling(): void {
+    if (this.masterTimer !== undefined || this.state.mode !== "master" || this.state.role !== "GM" || document.hidden) return;
+    this.masterTimer = window.setInterval(() => {
+      void this.refreshMasterRoster(false);
+    }, Math.max(30_000, this.state.pollIntervalMs));
+  }
+
+  private stopMasterPolling(): void {
+    if (this.masterTimer === undefined) return;
+    window.clearInterval(this.masterTimer);
+    this.masterTimer = undefined;
+  }
+
+  private beginAttributeRoll(attribute: "AGI" | "FOR" | "INT" | "PRE" | "VIG"): void {
+    if (!this.state.sheet) return this.toast("Abra uma ficha antes de rolar um atributo.", "warning");
+    try {
+      this.state.pendingRoll = buildAttributeRollRequest(this.state.sheet, attribute, this.state.tokenId);
+      this.state.rolling = false;
+      this.render();
+    } catch (error) {
+      this.toast(error instanceof Error ? error.message : "Não foi possível preparar o teste.", "error");
+    }
+  }
+
+  private beginSkillRoll(index: number): void {
+    const skill = this.state.sheet?.skills?.[index];
+    if (!this.state.sheet || !skill) return this.toast("A perícia selecionada não está disponível.", "warning");
+    try {
+      this.state.pendingRoll = buildSkillRollRequest(this.state.sheet, skill, this.state.tokenId);
+      this.state.rolling = false;
+      this.render();
+    } catch (error) {
+      this.toast(error instanceof Error ? error.message : "Não foi possível preparar o teste.", "error");
+    }
+  }
+
+  private async submitRoll(): Promise<void> {
+    const pending = this.state.pendingRoll;
+    if (!pending || this.state.rolling) return;
+    const dtText = this.root.querySelector<HTMLInputElement>("#roll-dt")?.value.trim() ?? "";
+    const modifierText = this.root.querySelector<HTMLInputElement>("#roll-modifier")?.value.trim() ?? "0";
+    const difficulty = dtText === "" ? undefined : Number(dtText);
+    const modifier = modifierText === "" ? 0 : Number(modifierText);
+    if (difficulty !== undefined && (!Number.isInteger(difficulty) || difficulty < 0)) {
+      return this.toast("Informe uma DT inteira igual ou maior que zero.", "warning");
+    }
+    if (!Number.isFinite(modifier) || !Number.isInteger(modifier)) {
+      return this.toast("O modificador adicional precisa ser um número inteiro.", "warning");
+    }
+
+    const request: RollRequest = {
+      ...pending,
+      ...(difficulty !== undefined ? { difficulty } : { difficulty: undefined }),
+      modifiers: modifier === 0
+        ? pending.modifiers
+        : [...pending.modifiers, { label: "Modificador manual", value: modifier }],
+    };
+    this.state.pendingRoll = request;
+    this.state.rolling = true;
+    this.render();
+    await sleep(650);
+
+    try {
+      const rollerName = await OBR.player.getName();
+      const result = performRoll(request, rollerName);
+      this.state.rolling = false;
+      this.state.pendingRoll = undefined;
+      this.state.rollResults = [result, ...this.state.rollResults].slice(0, 12);
+
+      await OBR.broadcast.sendMessage(ROLL_CHANNEL, {
+        version: 1,
+        type: "ROLL_COMPLETED",
+        result,
+      } satisfies RollBroadcastMessage);
+
+      if (this.state.role === "GM") {
+        await appendSessionEvent({
+          characterId: result.characterId,
+          characterName: result.characterName,
+          tokenId: result.tokenId,
+          kind: "ROLL_COMPLETED",
+          field: result.label,
+          after: result.total,
+          source: "Owlbear",
+          detail: formatRollSummary(result),
+          at: result.completedAt,
+        });
+        await this.refreshSessionEvents();
+      }
+
+      await OBR.notification.show(formatRollSummary(result), result.outcome === "FAILURE" ? "WARNING" : "SUCCESS");
+    } catch (error) {
+      this.state.rolling = false;
+      this.toast(error instanceof Error ? error.message : "A rolagem não pôde ser distribuída.", "error");
+    }
+    this.render();
   }
 
   private async getUpdatedBinding(): Promise<TokenBinding | undefined> {
@@ -738,8 +1206,58 @@ export class CrisApp {
     const sheetId = button.dataset.sheetId;
     try {
       switch (action) {
+        case "master-panel": {
+          if (this.state.role !== "GM") return this.toast("O painel de operação é exclusivo do Mestre.", "error");
+          this.stopPolling();
+          this.state.mode = "master";
+          this.state.tokenId = undefined;
+          this.state.token = undefined;
+          this.state.binding = undefined;
+          this.state.reference = undefined;
+          this.state.sheet = undefined;
+          this.state.masterFilter = "ALL";
+          await this.refreshMasterRoster(true);
+          this.startMasterPolling();
+          break;
+        }
+        case "refresh-roster": {
+          if (this.state.role !== "GM") return;
+          await this.refreshMasterRoster(true);
+          break;
+        }
+        case "locate-token": {
+          const tokenId = button.dataset.tokenId;
+          if (!tokenId) return;
+          await locateToken(tokenId);
+          break;
+        }
+        case "open-roster-token": {
+          const tokenId = button.dataset.tokenId;
+          const entry = this.state.masterRoster.find((item) => item.tokenId === tokenId);
+          if (!tokenId || !entry) return;
+          this.stopMasterPolling();
+          this.state.tokenId = tokenId;
+          this.state.token = await getTokenById(tokenId);
+          this.state.binding = entry.binding;
+          this.state.reference = {
+            id: entry.binding.sheetId,
+            url: entry.binding.sourceUrl,
+            name: entry.binding.displayName,
+            status: entry.sheet ? "imported" : "link-only",
+            addedAt: entry.binding.boundAt,
+            ...(entry.sheet ? { updatedAt: entry.sheet.updatedAt } : {}),
+          };
+          this.state.sheet = entry.sheet ?? persistence.get(entry.binding.sheetId);
+          this.state.shareWithPlayers = entry.binding.shareWithPlayers;
+          this.state.mode = "token";
+          this.state.activeTab = "overview";
+          await this.refreshCurrentSheet();
+          this.startPolling();
+          break;
+        }
         case "open-sheet": {
           if (!sheetId) return;
+          this.stopMasterPolling();
           this.state.reference = this.state.library.find((entry) => entry.id === sheetId);
           this.state.sheet = persistence.get(sheetId);
           this.state.mode = "token";
@@ -766,6 +1284,26 @@ export class CrisApp {
         case "refresh-sheet":
           await this.refreshCurrentSheet();
           break;
+        case "start-attribute-roll": {
+          const attribute = button.dataset.attribute;
+          if (attribute === "AGI" || attribute === "FOR" || attribute === "INT" || attribute === "PRE" || attribute === "VIG") {
+            this.beginAttributeRoll(attribute);
+          }
+          break;
+        }
+        case "start-skill-roll": {
+          const index = Number(button.dataset.skillIndex);
+          if (!Number.isInteger(index) || index < 0) return;
+          this.beginSkillRoll(index);
+          break;
+        }
+        case "confirm-roll":
+          await this.submitRoll();
+          break;
+        case "cancel-roll":
+          this.state.pendingRoll = undefined;
+          this.state.rolling = false;
+          break;
         case "remove-sheet": {
           if (!sheetId || this.state.role !== "GM") return;
           const reference = this.state.library.find((entry) => entry.id === sheetId);
@@ -781,6 +1319,7 @@ export class CrisApp {
             this.state.binding = undefined;
             this.state.mode = "library";
             this.stopPolling();
+            this.stopMasterPolling();
           }
           this.toast("Ficha removida da sala e dos Tokens associados.", "success");
           break;
@@ -816,6 +1355,7 @@ export class CrisApp {
         }
         case "back-library":
           this.stopPolling();
+          this.stopMasterPolling();
           this.state.mode = "library";
           this.state.tokenId = undefined;
           this.state.token = undefined;
@@ -845,6 +1385,46 @@ export class CrisApp {
       saveSyncInterval(nextInterval);
       this.stopPolling();
       this.startPolling();
+      this.stopMasterPolling();
+      this.startMasterPolling();
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.id === "roster-search") {
+      this.state.masterQuery = target.value;
+      this.render();
+      return;
+    }
+    if (target instanceof HTMLSelectElement && target.id === "roster-filter") {
+      const filter = target.value as RosterFilter;
+      if (["ALL", "ALIVE", "INCAPACITATED", "INJURED", "CONDITIONS", "ERROR"].includes(filter)) {
+        this.state.masterFilter = filter;
+        this.render();
+      }
+      return;
+    }
+    if (target instanceof HTMLSelectElement && target.id === "history-character") {
+      this.state.historyCharacterFilter = target.value;
+      this.render();
+      return;
+    }
+    if (target instanceof HTMLSelectElement && target.id === "history-kind") {
+      this.state.historyKindFilter = target.value;
+      this.render();
+      return;
+    }
+    if (target instanceof HTMLSelectElement && target.id === "history-source") {
+      this.state.historySourceFilter = target.value;
+      this.render();
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.id === "history-from") {
+      this.state.historyFromTime = target.value;
+      this.render();
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.id === "history-to") {
+      this.state.historyToTime = target.value;
+      this.render();
     }
   }
 

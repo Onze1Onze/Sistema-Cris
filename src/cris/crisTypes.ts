@@ -37,6 +37,13 @@ export interface AbilityEntry {
   detail?: string;
 }
 
+export interface ConditionEntry {
+  name: string;
+  description?: string;
+  duration?: string;
+  source?: string;
+}
+
 export interface CharacterSheet {
   schemaVersion: 1;
   id: string;
@@ -69,6 +76,8 @@ export interface CharacterSheet {
   inventory?: InventoryEntry[];
   abilities?: AbilityEntry[];
   rituals?: AbilityEntry[];
+  /** Condições apenas quando fornecidas explicitamente pelo documento do C.R.I.S. */
+  conditions?: ConditionEntry[];
   additional?: Record<string, unknown>;
 }
 

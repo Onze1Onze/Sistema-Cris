@@ -5,6 +5,12 @@ import { checkConcurrentValue } from "../src/cris/crisConflict";
 import { CRIS_EVENT_CAPABILITIES, getCrisEventTransport } from "../src/cris/crisEvents";
 import { reconcileRemoteSheet, diffResourceValues, isCrisNetworkFailure } from "../src/cris/crisSync";
 import { CrisWriteUnavailableError, isCrisResourceWritable, writeResourceToCris } from "../src/cris/crisWrite";
+import { rollD20Test } from "../src/rolls/rollEngine";
+import { buildAttributeRollRequest, buildSkillRollRequest, getSkillAttribute } from "../src/rolls/rollService";
+import type { CharacterSheet } from "../src/cris/crisTypes";
+import type { RollRequest } from "../src/rolls/rollTypes";
+import type { MasterRosterEntry } from "../src/master-panel/masterPanel";
+import { matchesRosterFilter } from "../src/master-panel/rosterFilters";
 
 const sampleUrl = "https://crisordemparanormal.com/agente/AbC123";
 
@@ -134,6 +140,15 @@ function firestoreCharacter() {
         attribute: fsString("INT"),
         trainingDegree: fsString("5"),
         otherBonus: fsInt(2),
+      }),
+    ]),
+
+    conditions: fsArray([
+      fsMap({
+        name: fsString("Atordoado"),
+        description: fsString("Condição fornecida pelo documento remoto."),
+        duration: fsString("1 rodada"),
+        source: fsString("C.R.I.S."),
       }),
     ]),
     attacks: fsArray([
@@ -364,5 +379,166 @@ describe("transporte de eventos", () => {
     expect(CRIS_EVENT_CAPABILITIES.pollingSupported).toBe(true);
     expect(CRIS_EVENT_CAPABILITIES.pollingIntervalMs).toBe(15_000);
     expect(getCrisEventTransport()).toBe("POLLING");
+  });
+});
+
+
+describe("rolagens de atributos e perícias — Ordem Paranormal 1.2", () => {
+  const sheet: CharacterSheet = {
+    schemaVersion: 1,
+    id: "AbC123",
+    sourceUrl: sampleUrl,
+    updatedAt: 1,
+    identity: { name: "Eleanor Hale" },
+    attributes: { AGI: 3, FOR: 1, INT: 4, PRE: 2, VIG: 0 },
+  };
+
+  it("rola um d20 por ponto de atributo e mantém o maior", () => {
+    const request = buildAttributeRollRequest(sheet, "AGI", "token-1", 20);
+    const sequence = [0, 0.5, 0.95];
+    let index = 0;
+    const result = rollD20Test(request, "Mestre", () => sequence[index++], 1234);
+    expect(result.dice).toEqual([1, 11, 20]);
+    expect(result.chosenDie).toBe(20);
+    expect(result.total).toBe(20);
+    expect(result.outcome).toBe("SUCCESS");
+  });
+
+  it("com atributo zero rola 2d20 e mantém o menor resultado", () => {
+    const request = buildAttributeRollRequest(sheet, "VIG");
+    const sequence = [0.95, 0.05];
+    let index = 0;
+    const result = rollD20Test(request, "Jogador", () => sequence[index++], 1235);
+    expect(result.dice).toEqual([20, 2]);
+    expect(result.chosenDie).toBe(2);
+    expect(result.total).toBe(2);
+  });
+
+  it("associa perícias oficiais aos atributos-base conhecidos", () => {
+    expect(getSkillAttribute({ name: "Furtividade" })).toBe("AGI");
+    expect(getSkillAttribute({ name: "Luta" })).toBe("FOR");
+    expect(getSkillAttribute({ name: "Investigação" })).toBe("INT");
+    expect(getSkillAttribute({ name: "Percepção" })).toBe("PRE");
+    expect(getSkillAttribute({ name: "Fortitude" })).toBe("VIG");
+  });
+
+  it("bloqueia perícia desconhecida sem atributo informado em vez de adivinhar", () => {
+    expect(() => buildSkillRollRequest(sheet, { name: "Perícia personalizada" })).toThrow("atributo-base");
+  });
+
+  it("soma bônus de perícia e modificadores e compara com a DT", () => {
+    const request: RollRequest = {
+      id: "roll-test",
+      characterId: sheet.id,
+      characterName: sheet.identity.name,
+      type: "SKILL",
+      label: "Luta",
+      attribute: "FOR",
+      attributeValue: 1,
+      skillBonus: 5,
+      modifiers: [{ label: "Ajuda", value: 2 }],
+      difficulty: 17,
+      createdAt: 1,
+    };
+    const result = rollD20Test(request, "Jogador", () => 0.5, 999);
+    expect(result.chosenDie).toBe(11);
+    expect(result.totalBonus).toBe(7);
+    expect(result.total).toBe(18);
+    expect(result.outcome).toBe("SUCCESS");
+  });
+
+  it("rejeita dados de entrada inválidos", () => {
+    const request: RollRequest = {
+      id: "roll-invalid",
+      characterId: sheet.id,
+      characterName: sheet.identity.name,
+      type: "ATTRIBUTE",
+      label: "Agilidade",
+      attribute: "AGI",
+      attributeValue: 2,
+      skillBonus: 0,
+      modifiers: [],
+      createdAt: 1,
+    };
+    expect(() => rollD20Test(request, "Jogador", () => 1)).toThrow("gerador de dados");
+    expect(() => rollD20Test({ ...request, difficulty: -1 }, "Jogador")).toThrow("DT");
+  });
+});
+
+describe("filtros do painel do Mestre", () => {
+  const rosterEntry: MasterRosterEntry = {
+    tokenId: "token-1",
+    tokenName: "João",
+    binding: {
+      version: 1,
+      sheetId: "AbC123",
+      sourceUrl: sampleUrl,
+      displayName: "João",
+      boundAt: 1,
+      shareWithPlayers: false,
+    },
+    status: "SYNCED",
+    sheet: {
+      schemaVersion: 1,
+      id: "AbC123",
+      sourceUrl: sampleUrl,
+      updatedAt: 1,
+      identity: { name: "João" },
+      resources: {
+        pv: { current: 18, max: 30 },
+        pe: { current: 8, max: 12 },
+        san: { current: 35, max: 40 },
+      },
+      conditions: [{ name: "Atordoado" }],
+    },
+  };
+
+  it("filtra personagens vivos, feridos e com condições", () => {
+    expect(matchesRosterFilter(rosterEntry, "ALIVE")).toBe(true);
+    expect(matchesRosterFilter(rosterEntry, "INJURED")).toBe(true);
+    expect(matchesRosterFilter(rosterEntry, "CONDITIONS")).toBe(true);
+    expect(matchesRosterFilter(rosterEntry, "INCAPACITATED")).toBe(false);
+  });
+
+  it("identifica incapacitação por PV zero ou condição crítica", () => {
+    const zeroPv = {
+      ...rosterEntry,
+      sheet: {
+        ...rosterEntry.sheet!,
+        resources: {
+          ...rosterEntry.sheet!.resources,
+          pv: { current: 0, max: 30 },
+        },
+      },
+    };
+    const critical = {
+      ...rosterEntry,
+      sheet: {
+        ...rosterEntry.sheet!,
+        conditions: [{ name: "Inconsciente" }],
+      },
+    };
+    expect(matchesRosterFilter(zeroPv, "INCAPACITATED")).toBe(true);
+    expect(matchesRosterFilter(critical, "INCAPACITATED")).toBe(true);
+  });
+
+  it("filtra conexões com erro ou offline", () => {
+    expect(matchesRosterFilter({ ...rosterEntry, status: "OFFLINE" }, "ERROR")).toBe(true);
+    expect(matchesRosterFilter({ ...rosterEntry, status: "ERROR" }, "ERROR")).toBe(true);
+    expect(matchesRosterFilter(rosterEntry, "ERROR")).toBe(false);
+  });
+});
+
+describe("condições importadas", () => {
+  it("preserva somente condições efetivamente presentes no documento Firestore", () => {
+    const sheet = parseFirestoreCharacterDocument(firestoreDocument(), "AbC123", sampleUrl);
+    expect(sheet.conditions).toEqual([
+      {
+        name: "Atordoado",
+        description: "Condição fornecida pelo documento remoto.",
+        duration: "1 rodada",
+        source: "C.R.I.S.",
+      },
+    ]);
   });
 });
