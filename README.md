@@ -8,7 +8,7 @@ Extensão para importar fichas públicas do C.R.I.S., apresentar o dossiê compl
 
 1. Abra o Owlbear Rodeo e entre em uma sala.
 2. Em Extensions, adicione uma extensão usando o manifesto:
-   `https://onze1onze.github.io/Sistema-Conex-o-com-Cris/manifest.json`
+   `https://onze1onze.github.io/Sistema-Cris/manifest.json`
 3. Na barra de ações da sala, abra **Sistema-Cris**. Não selecione outra extensão, como “Munição”.
 4. O campo de link fica visível logo ao abrir o arquivo. Cole o endereço público de uma ficha CRIS e pressione **IMPORTAR FICHA**.
 5. Depois da importação, o dossiê abre com os dados disponíveis: retrato, identidade, atributos, recursos, combate, perícias, poderes, habilidades, rituais, armas, equipamentos e inventário. Campos ainda não reconhecidos são preservados em **Informações adicionais**.
