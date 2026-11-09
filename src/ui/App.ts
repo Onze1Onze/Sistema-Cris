@@ -21,12 +21,34 @@ import {
   syncSharedSnapshotsForSheet,
   unbindAllTokensForSheet,
 } from "../owlbear/tokenBinding";
-import { buildAttributeRollRequest, buildSkillRollRequest, formatRollSummary, performRoll, ROLL_CHANNEL, type RollRequest, type RollResult } from "../rolls/rollService";
+import { buildAttributeRollRequest, buildSkillRollRequest, createRollId, formatRollSummary, performRoll, ROLL_CHANNEL, type RollRequest, type RollResult } from "../rolls/rollService";
 import type { RollBroadcastMessage } from "../rolls/rollTypes";
 import { appendSessionEvent, getSessionHistory, SESSION_HISTORY_KEY, type SessionEvent } from "../history/sessionHistory";
 import { loadMasterRoster, locateToken, type MasterRosterEntry } from "../master-panel/masterPanel";
 import { matchesRosterFilter, type RosterFilter } from "../master-panel/rosterFilters";
 import { syncConditionMarkers } from "../conditions/conditionMarkers";
+import {
+  DEFAULT_INITIATIVE_SCENE,
+  INITIATIVE_SCENE_KEY,
+  INITIATIVE_TOKEN_KEY,
+  LEGACY_INITIATIVE_SCENE_KEY,
+  LEGACY_INITIATIVE_TOKEN_KEY,
+  advanceInitiativeTurn,
+  buildInitiativeEntries,
+  createInitiativeRollSnapshot,
+  effectiveThreatBonus,
+  findInitiativeTies,
+  getInitiativeProfile,
+  initiativeProgress,
+  isInitiativeEligible,
+  normalizeInitiativeCombatant,
+  normalizeInitiativeScene,
+  readInitiativeCombatant,
+  selectInitiativeTurn,
+  type InitiativeCombatant,
+  type InitiativeEntry,
+  type InitiativeSceneState,
+} from "../initiative/initiativeEngine";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 const PAGES_BASE = "/Sistema-Cris/";
@@ -40,7 +62,7 @@ interface SyncHistoryEntry extends ResourceDelta {
 
 interface AppState {
   role: "GM" | "PLAYER";
-  mode: "library" | "token" | "bind" | "master";
+  mode: "library" | "token" | "bind" | "master" | "initiative";
   tokenId?: string;
   token?: SceneItem;
   binding?: TokenBinding;
@@ -56,6 +78,8 @@ interface AppState {
   pendingRoll?: RollRequest;
   rolling: boolean;
   rollResults: RollResult[];
+  initiativeEntries: InitiativeEntry[];
+  initiativeScene: InitiativeSceneState;
   masterRoster: MasterRosterEntry[];
   masterBusy: boolean;
   masterFilter: RosterFilter;
@@ -145,12 +169,15 @@ function renderSyncBanner(state: AppState): string {
 
 function renderHeader(state: AppState): string {
   const modeLabel = state.role === "GM" ? "ACESSO DO MESTRE" : "ACESSO DO JOGADOR";
+  const initiativeAction = state.mode === "initiative"
+    ? `<button class="header-action" data-action="back-library" type="button">ARQUIVO</button>`
+    : `<button class="header-action" data-action="open-initiative" type="button">INICIATIVA</button>`;
   return `<header class="topbar">
     <div class="brand-seal" aria-hidden="true"><span>✦</span><i></i></div>
     <div class="brand-copy"><div class="micro-label">ORDEM REALITAS // ARQUIVO DIGITAL</div><div class="brand-title">SISTEMA <b>C.R.I.S.</b></div></div>
-    <div class="header-stamp"><span class="status-light"></span><span>${modeLabel}</span></div>
+    ${initiativeAction}<div class="header-stamp"><span class="status-light"></span><span>${modeLabel}</span></div>
   </header>
-  <div class="subbar"><span>REGISTRO DE AGENTES</span><span>///</span><span>INTERFACE DE CAMPO v1.3</span></div>`;
+  <div class="subbar"><span>REGISTRO DE AGENTES</span><span>///</span><span>INTERFACE DE CAMPO v1.4</span></div>`;
 }
 
 function renderNavigation(active: ViewTab, role: AppState["role"]): string {
@@ -514,20 +541,149 @@ function renderLibrary(state: AppState): string {
     <div class="footnote privacy-note">ASSOCIAÇÕES SÃO SALVAS NA CENA. OS DADOS SÃO CONSULTADOS DIRETAMENTE NO C.R.I.S.; O COMPARTILHAMENTO COM JOGADORES DEPENDE DA AUTORIZAÇÃO DO MESTRE.</div>`;
 }
 
+function renderInitiativePanel(state: AppState): string {
+  const entries = state.initiativeEntries;
+  const scene = state.initiativeScene;
+  const isGM = state.role === "GM";
+  const ties = findInitiativeTies(entries);
+  const active = entries.find((entry) => entry.id === scene.activeId);
+  const progress = initiativeProgress(entries, scene);
+  const unrolled = entries.filter((entry) => !entry.combatant.roll);
+  const eligible = entries.filter((entry) => isInitiativeEligible(entry, scene.round));
+  const participantCards = entries.map((entry, index) => {
+    const data = entry.combatant;
+    const isActive = entry.id === scene.activeId;
+    const isTied = ties.some((group) => group.some((candidate) => candidate.id === entry.id));
+    const late = scene.started && data.availableFromRound > scene.round;
+    const surprised = data.surprised && scene.round === 1;
+    const score = data.initiative === null ? "—" : String(data.initiative);
+    const role = data.role === "THREAT" ? "AMEAÇA" : "AGENTE";
+    const mechanics = data.role === "AGENT"
+      ? entry.profile
+        ? `AGI ${entry.profile.attributeValue} · INICIATIVA ${entry.profile.bonus >= 0 ? "+" : ""}${entry.profile.bonus}`
+        : entry.initiativeError ?? "AGUARDANDO FICHA C.R.I.S."
+      : entry.derivedThreatBonus !== undefined
+        ? `BÔNUS DA FICHA ${entry.derivedThreatBonus >= 0 ? "+" : ""}${entry.derivedThreatBonus} · MENOR DO GRUPO`
+        : `BÔNUS MANUAL ${data.threatBonus >= 0 ? "+" : ""}${data.threatBonus}`;
+    const flags = [
+      surprised ? '<span class="initiative-flag warning">SURPREENDIDO · NÃO AGE NA RODADA 1</span>' : "",
+      late ? `<span class="initiative-flag">ENTRA NA RODADA ${data.availableFromRound}</span>` : "",
+      isTied ? '<span class="initiative-flag danger">EMPATE · DESEMPATE NECESSÁRIO</span>' : "",
+      entry.conditions.map((condition) => `<span class="initiative-flag condition">${escapeHtml(condition)}</span>`).join(""),
+      entry.tokenIds.length > 1 ? `<span class="initiative-flag">${entry.tokenIds.length} TOKENS · TESTE ÚNICO</span>` : "",
+    ].filter(Boolean).join("");
+    const roll = data.roll
+      ? `${data.roll.dice.length}d20 [${data.roll.dice.join(" · ")}] · ${data.roll.keep === "lowest" ? "MENOR" : "MAIOR"} ${data.roll.selected} ${data.roll.bonus >= 0 ? "+" : ""}${data.roll.bonus} = ${data.roll.total}`
+      : data.initiative !== null ? `RESULTADO LEGADO ${data.initiative} · ROLE NOVAMENTE` : "TESTE DE INICIATIVA PENDENTE";
+    const portraitUrl = entry.sheet?.portraitUrl;
+    const portraitMarkup = portraitUrl && /^https?:\/\//i.test(portraitUrl)
+      ? `<img class="initiative-portrait" src="${escapeHtml(portraitUrl)}" alt="" loading="lazy">`
+      : `<span class="initiative-portrait fallback">${escapeHtml((data.displayName || entry.name).slice(0, 2).toLocaleUpperCase("pt-BR"))}</span>`;
+    return `<article class="initiative-card ${isActive ? "is-active" : ""}" data-entry-id="${escapeHtml(entry.id)}">
+      <div class="initiative-card-head">
+        <span class="initiative-rank">${String(index + 1).padStart(2, "0")}</span>
+        ${portraitMarkup}
+        <div class="initiative-identity"><strong>${escapeHtml(data.displayName || entry.name)}</strong><small>${role} · ${escapeHtml(mechanics)}</small></div>
+        <div class="initiative-score ${data.roll ? "" : "pending"}"><small>${data.roll ? "INICIATIVA" : "PENDENTE"}</small><strong>${escapeHtml(score)}</strong></div>
+      </div>
+      ${flags ? `<div class="initiative-flags">${flags}</div>` : ""}
+      <div class="initiative-roll-detail">${escapeHtml(roll)}</div>
+      ${data.note ? `<p class="initiative-note">NOTA · ${escapeHtml(data.note)}</p>` : ""}
+      ${isGM ? `<div class="initiative-card-actions">
+        <button class="mini-button" data-action="initiative-edit" data-id="${escapeHtml(entry.id)}" type="button">EDITAR</button>
+        <button class="mini-button" data-action="initiative-toggle-surprised" data-id="${escapeHtml(entry.id)}" type="button">${data.surprised ? "REMOVER SURPRESA" : "SURPREENDIDO"}</button>
+        <button class="mini-button current" data-action="initiative-activate" data-id="${escapeHtml(entry.id)}" type="button" ${!scene.started || !isInitiativeEligible(entry, scene.round) ? "disabled" : ""}>${isActive ? "TURNO ATUAL" : "ATIVAR"}</button>
+        <button class="mini-button danger" data-action="initiative-remove" data-id="${escapeHtml(entry.id)}" type="button">REMOVER</button>
+      </div>` : ""}
+    </article>`;
+  }).join("");
+
+  return `<section class="initiative-view">
+    <div class="initiative-heading">
+      <button class="text-back" data-action="back-library" type="button">← ARQUIVO DA SALA</button>
+      <div class="micro-label">PROTOCOLO TÁTICO // ORDEM PARANORMAL RPG 1.2</div>
+      <h1>Ordem de Iniciativa</h1>
+      <p>Atributos, perícias e modificadores de agentes são lidos diretamente das fichas vinculadas do C.R.I.S.</p>
+    </div>
+    <section class="initiative-status">
+      <div class="initiative-case"><small>ESTADO DA OPERAÇÃO</small><strong>${scene.started ? "COMBATE EM ANDAMENTO" : entries.length ? "CENA PREPARADA" : "AGUARDANDO ENVOLVIDOS"}</strong><span>${entries.length} REGISTRO(S) · ${scene.round}ª RODADA</span></div>
+      <div class="initiative-round"><small>RODADA</small><strong>${scene.started ? String(scene.round).padStart(2, "0") : "—"}</strong></div>
+    </section>
+    <section class="initiative-turn-banner">
+      <div class="initiative-active-portrait">${active ? escapeHtml((active.combatant.displayName || active.name).slice(0, 2).toLocaleUpperCase("pt-BR")) : "—"}</div>
+      <div class="initiative-active-copy"><small>ENVOLVIDO EM AÇÃO</small><strong>${active ? escapeHtml(active.combatant.displayName || active.name) : "Nenhum turno ativo"}</strong><span>${active ? `${active.combatant.role === "THREAT" ? "AMEAÇA" : "AGENTE"} · INICIATIVA ${active.combatant.initiative}` : scene.started ? "Nenhum participante elegível nesta rodada." : "Inicie o combate para estabelecer a ordem."}</span></div>
+      <div class="initiative-progress"><div><small>SEQUÊNCIA</small><b>${progress}%</b></div><span><i style="width:${progress}%"></i></span></div>
+    </section>
+    <section class="initiative-rule-note">
+      <b>FÓRMULA C.R.I.S. · AGENTES</b>
+      <p>Usa a perícia Iniciativa da ficha, seu atributo-base Agilidade e o bônus total já calculado pelo C.R.I.S. AGI 0 mantém a regra de 2d20, escolhendo o menor. O treinamento não é somado novamente.</p>
+      <p><b>AMEAÇAS</b> — um teste único de 1d20 com o menor bônus de Iniciativa do grupo.</p>
+    </section>
+    ${isGM ? `<section class="initiative-controls">
+      <div class="section-title"><span>01</span><h2>CONTROLE DA OPERAÇÃO</h2><i></i></div>
+      <button class="button primary full" data-action="initiative-add-selected" type="button">＋ ADICIONAR TOKENS SELECIONADOS</button>
+      <div class="initiative-control-grid">
+        <button class="button secondary" data-action="initiative-roll" type="button" ${!entries.length || (scene.started && !unrolled.length) ? "disabled" : ""}>ROLAR INICIATIVA ${scene.started ? `(${unrolled.length} NOVOS)` : ""}</button>
+        <button class="button warning" data-action="initiative-resolve-ties" type="button" ${!ties.length ? "disabled" : ""}>DESEMPATAR (${ties.reduce((sum, group) => sum + group.length, 0)})</button>
+        <button class="button secondary" data-action="initiative-previous" type="button" ${!scene.started || !scene.activeId ? "disabled" : ""}>‹ TURNO ANTERIOR</button>
+        <button class="button secondary" data-action="initiative-next" type="button" ${!scene.started || !entries.length ? "disabled" : ""}>PRÓXIMO TURNO ›</button>
+        <button class="button primary" data-action="initiative-start" type="button" ${scene.started || !entries.length || unrolled.length > 0 || ties.length > 0 ? "disabled" : ""}>▶ INICIAR COMBATE</button>
+        <button class="button danger" data-action="initiative-end" type="button" ${!scene.started ? "disabled" : ""}>ENCERRAR COMBATE</button>
+      </div>
+      <button class="button danger full" data-action="initiative-clear" type="button" ${!entries.length ? "disabled" : ""}>LIMPAR REGISTRO DA CENA</button>
+      <p class="initiative-phase-note">${unrolled.length ? `${unrolled.length} participante(s) ainda precisam rolar iniciativa.` : ties.length ? "Resolva os empates antes de iniciar o combate." : scene.started ? "A iniciativa permanece fixa entre rodadas. Novos envolvidos entram na rodada seguinte." : "Revise os envolvidos e inicie o combate quando a ordem estiver pronta."}</p>
+    </section>` : ""}
+    <section class="initiative-participants">
+      <div class="section-title"><span>02</span><h2>ORDEM DE AÇÃO</h2><i></i><b>${entries.length.toString().padStart(2, "0")} REGISTROS</b></div>
+      ${participantCards || `<div class="empty-state"><span class="empty-scroll">✣</span><strong>NENHUM ENVOLVIDO REGISTRADO</strong><p>Selecione Tokens da camada Personagem e adicione-os à operação. Agentes precisam estar vinculados a uma ficha C.R.I.S.</p></div>`}
+      ${!isGM && entries.length ? '<p class="initiative-phase-note">Visualização da iniciativa compartilhada pela sala. O controle do combate pertence ao Mestre.</p>' : ""}
+      ${!eligible.length && scene.started ? '<p class="initiative-phase-note">Nenhum participante pode agir nesta rodada. Avance para a próxima rodada.</p>' : ""}
+    </section>
+  </section>
+  ${isGM ? `<dialog id="initiative-add-dialog" class="cris-dialog initiative-dialog">
+    <form id="initiative-add-form">
+      <div class="dialog-heading"><div><span class="micro-label">NOVO REGISTRO · ${state.initiativeEntries.length} NA CENA</span><h2>IDENTIFICAR ENVOLVIDOS</h2></div><button class="icon-button" data-action="initiative-close-add" type="button" aria-label="Fechar">×</button></div>
+      <label for="initiative-add-role">TIPO DE ENVOLVIDO</label>
+      <select id="initiative-add-role"><option value="AGENT">Agente / personagem com ficha C.R.I.S.</option><option value="THREAT">Ameaças — grupo do Mestre</option></select>
+      <label for="initiative-group-name">IDENTIFICAÇÃO DO GRUPO DE AMEAÇAS</label><input id="initiative-group-name" maxlength="80" value="Ameaças">
+      <label for="initiative-threat-bonus">BÔNUS DE INICIATIVA MANUAL (AMEAÇAS)</label><input id="initiative-threat-bonus" type="number" min="-99" max="99" value="0">
+      <p class="field-hint">Quando todos os Tokens do grupo tiverem fichas C.R.I.S. vinculadas e a perícia Iniciativa disponível, o sistema usa automaticamente o menor bônus da ficha. Caso contrário, utiliza este valor.</p>
+      <label for="initiative-modifier">MODIFICADOR SITUACIONAL ADICIONAL</label><input id="initiative-modifier" type="number" min="-99" max="99" value="0">
+      <label class="check-line"><input id="initiative-surprised" type="checkbox"><span>Surpreendido — não age na primeira rodada</span></label>
+      <div class="dialog-actions"><button class="text-action" data-action="initiative-close-add" type="button">CANCELAR</button><button class="dialog-submit" type="submit">REGISTRAR ENVOLVIDOS</button></div>
+    </form>
+  </dialog>
+  <dialog id="initiative-edit-dialog" class="cris-dialog initiative-dialog">
+    <form id="initiative-edit-form">
+      <div class="dialog-heading"><div><span class="micro-label">DOSSIÊ TÁTICO // AJUSTE INDIVIDUAL</span><h2>ALTERAR REGISTRO</h2></div><button class="icon-button" data-action="initiative-close-edit" type="button" aria-label="Fechar">×</button></div>
+      <input id="initiative-edit-id" type="hidden">
+      <label for="initiative-edit-modifier">MODIFICADOR SITUACIONAL</label><input id="initiative-edit-modifier" type="number" min="-99" max="99" value="0">
+      <label class="check-line"><input id="initiative-edit-surprised" type="checkbox"><span>Surpreendido — não age na primeira rodada</span></label>
+      <label for="initiative-edit-conditions">CONDIÇÕES ADICIONAIS <small>Separe por vírgulas</small></label><input id="initiative-edit-conditions" maxlength="180" placeholder="Ex.: Abalado, Caído">
+      <label for="initiative-edit-note">NOTAS DA OPERAÇÃO</label><textarea id="initiative-edit-note" rows="3" maxlength="500"></textarea>
+      <p id="initiative-edit-roll-info" class="field-hint"></p>
+      <div class="dialog-actions"><button class="text-action" data-action="initiative-close-edit" type="button">CANCELAR</button><button class="dialog-submit" type="submit">SALVAR DOSSIÊ</button></div>
+    </form>
+  </dialog>` : ""}`;
+}
+
 function renderApp(state: AppState): string {
   const title = state.mode === "library" ? "ARQUIVO DA SALA"
     : state.mode === "bind" ? "VINCULAR TOKEN"
     : state.mode === "master" ? "PAINEL DO MESTRE"
+    : state.mode === "initiative" ? "PROTOCOLO DE COMBATE"
     : "DOSSIÊ DO AGENTE";
   const header = renderHeader(state);
-  const body = state.mode === "library"
-    ? renderLibrary(state)
-    : state.mode === "master"
-      ? renderMasterPanel(state)
-      : state.sheet
+  const body = state.mode === "initiative"
+    ? renderInitiativePanel(state)
+    : state.mode === "library"
+      ? renderLibrary(state)
+      : state.mode === "master"
+        ? renderMasterPanel(state)
+        : state.sheet
         ? `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title} ${state.token ? `// ${escapeHtml(state.token.name ?? "TOKEN")}` : ""}</div><h1>Ficha do Personagem</h1><p>Registro de campo associado ao C.R.I.S.</p></section>${renderNavigation(state.activeTab, state.role)}<main class="sheet-content">${renderSheetContent(state)}</main>`
         : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title}</div><h1>Vincular ficha ao Token</h1><p>${escapeHtml(state.token?.name ?? "Token selecionado")}</p></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
-  return `<div class="app-shell">${header}<main class="content">${renderSyncBanner(state)}${body}${state.mode === "token" || state.mode === "master" ? renderRollFeed(state) : ""}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.3.0 · ${state.role}</span></footer>${renderRollDialog(state)}</div>`;
+  return `<div class="app-shell">${header}<main class="content">${renderSyncBanner(state)}${body}${state.mode === "token" || state.mode === "master" ? renderRollFeed(state) : ""}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.4.0 · ${state.role}</span></footer>${renderRollDialog(state)}</div>`;
 }
 
 function parseRollBroadcast(value: unknown): RollBroadcastMessage | undefined {
@@ -559,6 +715,7 @@ export class CrisApp {
   private unsubscribeHistory?: () => void;
   private masterTimer?: number;
   private masterInFlight = false;
+  private pendingInitiativeTokenIds: string[] = [];
   private readonly visibilityHandler = (): void => {
     if (document.hidden) {
       this.stopPolling();
@@ -585,7 +742,7 @@ export class CrisApp {
     this.root = element;
     const query = new URLSearchParams(window.location.search);
     const modeParam = query.get("mode");
-    const mode: AppState["mode"] = modeParam === "token" ? "token" : modeParam === "bind" ? "bind" : modeParam === "master" ? "master" : "library";
+    const mode: AppState["mode"] = modeParam === "token" ? "token" : modeParam === "bind" ? "bind" : modeParam === "master" ? "master" : modeParam === "initiative" ? "initiative" : "library";
     this.state = {
       role: "PLAYER",
       mode,
@@ -598,6 +755,8 @@ export class CrisApp {
       pollIntervalMs: readSyncInterval(),
       rolling: false,
       rollResults: [],
+      initiativeEntries: [],
+      initiativeScene: { ...DEFAULT_INITIATIVE_SCENE },
       masterRoster: [],
       masterBusy: false,
       masterFilter: "ALL",
@@ -630,6 +789,7 @@ export class CrisApp {
       this.toast("O painel de operação é exclusivo do Mestre.", "warning");
     }
     await this.reloadRoomData();
+    await this.refreshInitiativeData();
     const session = await getSessionHistory();
     this.state.sessionEvents = session.events;
     this.unsubscribeHistory = OBR.scene.onMetadataChange((metadata) => {
@@ -638,6 +798,8 @@ export class CrisApp {
         this.state.sessionEvents = value.events;
         if (this.state.activeTab === "history" || this.state.mode === "master") this.render();
       }
+      this.state.initiativeScene = normalizeInitiativeScene(metadata[INITIATIVE_SCENE_KEY] ?? metadata[LEGACY_INITIATIVE_SCENE_KEY]);
+      if (this.state.mode === "initiative") void this.refreshInitiativeData();
     });
     this.unsubscribeBroadcast = OBR.broadcast.onMessage(ROLL_CHANNEL, (event) => {
       const message = parseRollBroadcast(event.data);
@@ -668,6 +830,399 @@ export class CrisApp {
     } else {
       this.startPolling();
     }
+  }
+
+  private resolveInitiativeSheet(item: SceneItem): CharacterSheet | undefined {
+    const binding = readTokenBinding(item);
+    if (!binding) return undefined;
+    if (this.state.role === "PLAYER" && !binding.shareWithPlayers) return undefined;
+    return persistence.get(binding.sheetId) ?? (binding.shareWithPlayers ? binding.snapshot : undefined);
+  }
+
+  private async refreshInitiativeData(items?: SceneItem[]): Promise<void> {
+    if (!(await OBR.scene.isReady())) {
+      this.state.initiativeEntries = [];
+      this.state.initiativeScene = { ...DEFAULT_INITIATIVE_SCENE };
+      if (this.state.mode === "initiative") this.render();
+      return;
+    }
+    const [sceneItems, metadata] = await Promise.all([
+      items ? Promise.resolve(items) : OBR.scene.items.getItems(),
+      OBR.scene.getMetadata(),
+    ]);
+    this.state.initiativeEntries = buildInitiativeEntries(sceneItems, (item) => this.resolveInitiativeSheet(item));
+    this.state.initiativeScene = normalizeInitiativeScene(metadata[INITIATIVE_SCENE_KEY] ?? metadata[LEGACY_INITIATIVE_SCENE_KEY]);
+    if (this.state.mode === "initiative") this.render();
+  }
+
+  private async persistInitiativeScene(nextState: InitiativeSceneState): Promise<void> {
+    const next = normalizeInitiativeScene(nextState);
+    await OBR.scene.setMetadata({ [INITIATIVE_SCENE_KEY]: next });
+    this.state.initiativeScene = next;
+    this.render();
+  }
+
+  private async openInitiativeAddDialog(): Promise<void> {
+    if (this.state.role !== "GM") return this.toast("Somente o Mestre pode adicionar participantes à iniciativa.", "error");
+    this.state.masterRoster = await loadMasterRoster(false);
+    const selected = (await getCurrentSelection()).filter((item) => item.type === "IMAGE" && item.layer === "CHARACTER");
+    const eligible = selected.filter((item) => !readInitiativeCombatant(item));
+    if (!eligible.length) return this.toast("Selecione Tokens de personagem que ainda não estejam na ordem de iniciativa.", "warning");
+    this.pendingInitiativeTokenIds = eligible.map((item) => item.id);
+    this.state.mode = "initiative";
+    await this.refreshInitiativeData();
+    this.render();
+    this.root.querySelector<HTMLDialogElement>("#initiative-add-dialog")?.showModal();
+  }
+
+  private async submitInitiativeAdd(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.state.role !== "GM" || !this.pendingInitiativeTokenIds.length) return;
+    const role = this.root.querySelector<HTMLSelectElement>("#initiative-add-role")?.value === "THREAT" ? "THREAT" : "AGENT";
+    const groupName = this.root.querySelector<HTMLInputElement>("#initiative-group-name")?.value.trim() || "Ameaças";
+    const threatBonusInput = this.root.querySelector<HTMLInputElement>("#initiative-threat-bonus")?.value ?? "0";
+    const threatBonus = Number(threatBonusInput);
+    const modifier = Number(this.root.querySelector<HTMLInputElement>("#initiative-modifier")?.value ?? "0");
+    const surprised = this.root.querySelector<HTMLInputElement>("#initiative-surprised")?.checked ?? false;
+    if (!Number.isInteger(modifier) || modifier < -99 || modifier > 99 || !Number.isInteger(threatBonus) || threatBonus < -99 || threatBonus > 99) {
+      return this.toast("Os modificadores precisam ser números inteiros entre -99 e +99.", "warning");
+    }
+
+    const tokens = (await OBR.scene.items.getItems(this.pendingInitiativeTokenIds))
+      .filter((item) => item.type === "IMAGE" && item.layer === "CHARACTER" && !readInitiativeCombatant(item));
+    if (!tokens.length) return this.toast("Os Tokens selecionados não estão mais disponíveis.", "warning");
+
+    const nextRound = this.state.initiativeScene.started ? this.state.initiativeScene.round + 1 : 1;
+    const now = Date.now();
+    const updates = new Map<string, { version: 1; combatant: InitiativeCombatant }>();
+
+    if (role === "AGENT") {
+      const missing = tokens.filter((item) => {
+        const sheet = this.resolveInitiativeSheet(item);
+        if (!sheet) return true;
+        try { getInitiativeProfile(sheet); return false; } catch { return true; }
+      });
+      if (missing.length) {
+        return this.toast("Todos os agentes precisam de uma ficha C.R.I.S. acessível e da perícia Iniciativa vinculada à Agilidade. Corrija as fichas antes de recrutá-los.", "warning");
+      }
+      for (const item of tokens) {
+        const sheet = this.resolveInitiativeSheet(item)!;
+        const combatant = normalizeInitiativeCombatant({
+          role: "AGENT",
+          groupId: item.id,
+          displayName: sheet.identity.name || item.name || "Agente",
+          modifier,
+          initiative: null,
+          roll: null,
+          surprised,
+          availableFromRound: nextRound,
+          conditions: [],
+          note: "",
+          addedAt: now,
+        });
+        updates.set(item.id, { version: 1, combatant });
+      }
+    } else {
+      const profiles = tokens.map((item) => {
+        const sheet = this.resolveInitiativeSheet(item);
+        if (!sheet) return undefined;
+        try { return getInitiativeProfile(sheet); } catch { return undefined; }
+      });
+      const derivedBonus = profiles.every((profile) => profile !== undefined)
+        ? Math.min(...profiles.map((profile) => profile!.bonus))
+        : threatBonus;
+      const groupId = typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `threat-${now}-${Math.random().toString(36).slice(2, 8)}`;
+      const combatant = normalizeInitiativeCombatant({
+        role: "THREAT",
+        groupId,
+        groupName,
+        displayName: groupName,
+        threatBonus: derivedBonus,
+        modifier,
+        initiative: null,
+        roll: null,
+        surprised,
+        availableFromRound: nextRound,
+        conditions: [],
+        note: "",
+        addedAt: now,
+      });
+      for (const item of tokens) updates.set(item.id, { version: 1, combatant });
+    }
+
+    try {
+      await OBR.scene.items.updateItems([...updates.keys()], (draftItems) => {
+        for (const item of draftItems) {
+          const data = updates.get(item.id);
+          if (!data) continue;
+          item.metadata = item.metadata ?? {};
+          item.metadata[INITIATIVE_TOKEN_KEY] = data;
+          delete item.metadata[LEGACY_INITIATIVE_TOKEN_KEY];
+          delete item.metadata[LEGACY_INITIATIVE_TOKEN_KEY];
+        }
+      });
+      this.pendingInitiativeTokenIds = [];
+      this.root.querySelector<HTMLDialogElement>("#initiative-add-dialog")?.close();
+      await this.refreshInitiativeData();
+      this.toast(role === "THREAT" ? "Grupo de ameaças registrado com um único turno." : `${updates.size} agente(s) vinculado(s) à iniciativa do C.R.I.S.`, "success");
+    } catch (error) {
+      this.toast(error instanceof Error ? error.message : "Não foi possível registrar os envolvidos.", "error");
+    }
+  }
+
+  private async persistInitiativeEntry(entry: InitiativeEntry, next: InitiativeCombatant): Promise<void> {
+    await OBR.scene.items.updateItems(entry.tokenIds, (draftItems) => {
+      for (const item of draftItems) {
+        item.metadata = item.metadata ?? {};
+        item.metadata[INITIATIVE_TOKEN_KEY] = { version: 1, combatant: next };
+        delete item.metadata[LEGACY_INITIATIVE_TOKEN_KEY];
+      }
+    });
+    await this.refreshInitiativeData();
+  }
+
+  private async rollInitiativeEntries(targets: InitiativeEntry[], message: string): Promise<void> {
+    if (this.state.role !== "GM" || !targets.length || this.state.busy) return;
+    const invalid = targets.find((entry) => entry.combatant.role === "AGENT" && (!entry.sheet || !entry.profile));
+    if (invalid) return this.toast(invalid.initiativeError ?? `A ficha de ${invalid.name} não oferece dados válidos para Iniciativa.`, "warning");
+
+    this.state.busy = true;
+    this.render();
+    try {
+      const rollerName = await OBR.player.getName();
+      const updates = new Map<string, { version: 1; combatant: InitiativeCombatant }>();
+      const results: RollResult[] = [];
+
+      for (const entry of targets) {
+        const modifiers = entry.combatant.modifier === 0
+          ? []
+          : [{ label: "Modificador situacional", value: entry.combatant.modifier }];
+        let request: RollRequest;
+        if (entry.combatant.role === "AGENT") {
+          request = buildSkillRollRequest(entry.sheet!, entry.profile!.skill, entry.tokenIds[0], undefined, modifiers);
+        } else {
+          request = {
+            id: createRollId(),
+            characterId: `threat-${entry.groupId}`,
+            characterName: entry.combatant.groupName || entry.name,
+            tokenId: entry.tokenIds[0],
+            type: "CUSTOM",
+            label: "Iniciativa",
+            attributeValue: 1,
+            skillBonus: effectiveThreatBonus(entry),
+            modifiers,
+            createdAt: Date.now(),
+          };
+        }
+        const result = performRoll(request, rollerName);
+        results.push(result);
+        const snapshot = createInitiativeRollSnapshot(
+          result.dice,
+          result.chosenDie,
+          result.attributeValue === 0 ? "lowest" : "highest",
+          result.totalBonus,
+          result.total,
+          result.rollerName,
+          `${result.attributeValue === 0 ? "2d20 (menor)" : `${result.attributeValue}d20 (maior)`} ${result.totalBonus >= 0 ? "+" : "−"} ${Math.abs(result.totalBonus)}`,
+          result.completedAt,
+        );
+        const next = normalizeInitiativeCombatant({
+          ...entry.combatant,
+          initiative: result.total,
+          roll: snapshot,
+        });
+        for (const tokenId of entry.tokenIds) updates.set(tokenId, { version: 1, combatant: next });
+      }
+
+      await OBR.scene.items.updateItems([...updates.keys()], (draftItems) => {
+        for (const item of draftItems) {
+          const data = updates.get(item.id);
+          if (!data) continue;
+          item.metadata = item.metadata ?? {};
+          item.metadata[INITIATIVE_TOKEN_KEY] = data;
+        }
+      });
+
+      for (const result of results) {
+        await OBR.broadcast.sendMessage(ROLL_CHANNEL, {
+          version: 1,
+          type: "ROLL_COMPLETED",
+          result,
+        } satisfies RollBroadcastMessage);
+        await appendSessionEvent({
+          characterId: result.characterId,
+          characterName: result.characterName,
+          tokenId: result.tokenId,
+          kind: "ROLL_COMPLETED",
+          field: "Iniciativa",
+          after: result.total,
+          source: "Owlbear",
+          detail: formatRollSummary(result),
+          at: result.completedAt,
+        });
+      }
+      this.state.rollResults = [...results.reverse(), ...this.state.rollResults].slice(0, 12);
+      await this.refreshSessionEvents();
+      await this.refreshInitiativeData();
+      await OBR.notification.show(message || "Testes de iniciativa concluídos.", "SUCCESS");
+    } catch (error) {
+      this.toast(error instanceof Error ? error.message : "A rolagem de iniciativa falhou.", "error");
+    } finally {
+      this.state.busy = false;
+      this.render();
+    }
+  }
+
+  private async rollInitiative(): Promise<void> {
+    const targets = this.state.initiativeScene.started
+      ? this.state.initiativeEntries.filter((entry) => !entry.combatant.roll)
+      : this.state.initiativeEntries;
+    if (!targets.length) return this.toast("Todos os envolvidos já possuem um teste de iniciativa.", "info");
+    await this.rollInitiativeEntries(targets, "Iniciativa registrada na ocorrência.");
+  }
+
+  private async resolveInitiativeTies(): Promise<void> {
+    const tied = findInitiativeTies(this.state.initiativeEntries).flat();
+    if (!tied.length) return;
+    await this.rollInitiativeEntries(tied, "Empates resolvidos por novas rolagens.");
+  }
+
+  private async startInitiativeCombat(): Promise<void> {
+    const entries = this.state.initiativeEntries;
+    if (!entries.length) return;
+    if (entries.some((entry) => !entry.combatant.roll)) {
+      return this.toast("Todos os participantes precisam de um teste válido antes do início do combate.", "warning");
+    }
+    if (findInitiativeTies(entries).length) return this.toast("Resolva todos os empates antes de iniciar.", "warning");
+    const first = entries.find((entry) => isInitiativeEligible(entry, 1));
+    await this.persistInitiativeScene({
+      started: true,
+      round: 1,
+      activeId: first?.id ?? null,
+      changedAt: Date.now(),
+    });
+    await appendSessionEvent({
+      characterName: "Combate",
+      kind: "CHARACTER_UPDATED",
+      field: "INÍCIO DO COMBATE",
+      after: 1,
+      source: "Sistema",
+      detail: `Combate iniciado com ${entries.length} participante(s).`,
+    });
+    await this.refreshSessionEvents();
+  }
+
+  private async changeInitiativeTurn(direction: number): Promise<void> {
+    if (!this.state.initiativeScene.started) return;
+    const next = advanceInitiativeTurn(this.state.initiativeEntries, this.state.initiativeScene, direction);
+    if (next.activeId === this.state.initiativeScene.activeId && next.round === this.state.initiativeScene.round) return;
+    await this.persistInitiativeScene(next);
+  }
+
+  private async endInitiativeCombat(): Promise<void> {
+    if (!this.state.initiativeScene.started) return;
+    if (!window.confirm("Encerrar o combate e manter os resultados dos participantes?")) return;
+    await this.persistInitiativeScene({
+      ...this.state.initiativeScene,
+      started: false,
+      round: 1,
+      activeId: null,
+      changedAt: Date.now(),
+    });
+    await appendSessionEvent({
+      characterName: "Combate",
+      kind: "CHARACTER_UPDATED",
+      field: "FIM DO COMBATE",
+      source: "Sistema",
+      detail: "Combate encerrado; os registros de iniciativa foram preservados.",
+    });
+    await this.refreshSessionEvents();
+  }
+
+  private async clearInitiative(): Promise<void> {
+    if (!this.state.initiativeEntries.length || !window.confirm("Apagar todos os registros de iniciativa desta cena? As fichas C.R.I.S. e os vínculos dos Tokens serão preservados.")) return;
+    const tokenIds = this.state.initiativeEntries.flatMap((entry) => entry.tokenIds);
+    await OBR.scene.items.updateItems(tokenIds, (draftItems) => {
+      for (const item of draftItems) {
+        if (item.metadata) {
+          delete item.metadata[INITIATIVE_TOKEN_KEY];
+          delete item.metadata[LEGACY_INITIATIVE_TOKEN_KEY];
+        }
+      }
+    });
+    await this.persistInitiativeScene({ ...DEFAULT_INITIATIVE_SCENE, changedAt: Date.now() });
+    await this.refreshInitiativeData();
+    this.toast("Registros de iniciativa removidos. As fichas C.R.I.S. permanecem vinculadas.", "success");
+  }
+
+  private async removeInitiativeEntry(id: string): Promise<void> {
+    const entry = this.state.initiativeEntries.find((item) => item.id === id);
+    if (!entry) return;
+    await OBR.scene.items.updateItems(entry.tokenIds, (draftItems) => {
+      for (const item of draftItems) {
+        if (item.metadata) delete item.metadata[INITIATIVE_TOKEN_KEY];
+      }
+    });
+    await this.refreshInitiativeData();
+    if (this.state.initiativeScene.started && this.state.initiativeScene.activeId === id) {
+      const next = advanceInitiativeTurn(
+        this.state.initiativeEntries,
+        { ...this.state.initiativeScene, activeId: null },
+        1,
+      );
+      await this.persistInitiativeScene(next);
+    }
+  }
+
+  private openInitiativeEditor(id: string): void {
+    const entry = this.state.initiativeEntries.find((item) => item.id === id);
+    if (!entry) return;
+    const get = <T extends HTMLElement>(selector: string) => this.root.querySelector<T>(selector);
+    get<HTMLInputElement>("#initiative-edit-id")!.value = id;
+    get<HTMLInputElement>("#initiative-edit-modifier")!.value = String(entry.combatant.modifier);
+    get<HTMLInputElement>("#initiative-edit-surprised")!.checked = entry.combatant.surprised;
+    get<HTMLInputElement>("#initiative-edit-conditions")!.value = entry.combatant.conditions.join(", ");
+    get<HTMLTextAreaElement>("#initiative-edit-note")!.value = entry.combatant.note;
+    get<HTMLElement>("#initiative-edit-roll-info")!.textContent = entry.combatant.roll
+      ? `Resultado atual: ${entry.combatant.initiative}. Alterar o modificador invalida a rolagem e exige novo teste.`
+      : "Ainda não existe uma rolagem válida registrada.";
+    get<HTMLDialogElement>("#initiative-edit-dialog")?.showModal();
+  }
+
+  private async submitInitiativeEdit(event: Event): Promise<void> {
+    event.preventDefault();
+    const id = this.root.querySelector<HTMLInputElement>("#initiative-edit-id")?.value;
+    const entry = this.state.initiativeEntries.find((item) => item.id === id);
+    if (!entry) return;
+    const modifier = Number(this.root.querySelector<HTMLInputElement>("#initiative-edit-modifier")?.value ?? "0");
+    if (!Number.isInteger(modifier) || modifier < -99 || modifier > 99) return this.toast("O modificador precisa ser um inteiro entre -99 e +99.", "warning");
+    const surprised = this.root.querySelector<HTMLInputElement>("#initiative-edit-surprised")?.checked ?? false;
+    const conditions = (this.root.querySelector<HTMLInputElement>("#initiative-edit-conditions")?.value ?? "")
+      .split(",").map((part) => part.trim()).filter(Boolean).slice(0, 12);
+    const note = this.root.querySelector<HTMLTextAreaElement>("#initiative-edit-note")?.value.trim() ?? "";
+    const mechanicalChange = modifier !== entry.combatant.modifier;
+    const next = normalizeInitiativeCombatant({
+      ...entry.combatant,
+      modifier,
+      surprised,
+      conditions,
+      note,
+      ...(mechanicalChange ? { initiative: null, roll: null } : {}),
+    });
+    await this.persistInitiativeEntry(entry, next);
+    this.root.querySelector<HTMLDialogElement>("#initiative-edit-dialog")?.close();
+    this.toast(mechanicalChange ? "Modificador atualizado. Role a iniciativa novamente." : "Dossiê tático atualizado.", "success");
+  }
+
+  private async toggleInitiativeSurprised(id: string): Promise<void> {
+    const entry = this.state.initiativeEntries.find((item) => item.id === id);
+    if (!entry) return;
+    await this.persistInitiativeEntry(entry, normalizeInitiativeCombatant({
+      ...entry.combatant,
+      surprised: !entry.combatant.surprised,
+    }));
   }
 
   private async reloadRoomData(): Promise<void> {
@@ -752,7 +1307,16 @@ export class CrisApp {
   }
 
   private async handleSubmit(event: Event): Promise<void> {
-    if (!(event.target instanceof HTMLFormElement) || event.target.id !== "connect-form") return;
+    if (!(event.target instanceof HTMLFormElement)) return;
+    if (event.target.id === "initiative-add-form") {
+      await this.submitInitiativeAdd(event);
+      return;
+    }
+    if (event.target.id === "initiative-edit-form") {
+      await this.submitInitiativeEdit(event);
+      return;
+    }
+    if (event.target.id !== "connect-form") return;
     event.preventDefault();
     if (this.state.role !== "GM") return this.toast("Somente o Mestre pode cadastrar fichas.", "error");
     const input = this.root.querySelector<HTMLInputElement>("#cris-url");
@@ -792,6 +1356,7 @@ export class CrisApp {
       }
       this.state.syncStatus = "SYNCED";
       this.state.lastSyncAt = Date.now();
+      await this.refreshInitiativeData();
       this.toast(result.message, "success");
       this.startPolling();
     } catch (error) {
@@ -848,11 +1413,13 @@ export class CrisApp {
       ].slice(0, 30);
     }
     persistence.save(reconciliation.sheet);
+    void this.refreshInitiativeData();
     void syncConditionMarkers(this.state.role);
     this.render();
   }
 
   private handleSceneItemsChanged(items: SceneItem[]): void {
+    void this.refreshInitiativeData(items);
     if (!this.state.tokenId) return;
     const item = items.find((candidate) => candidate.id === this.state.tokenId);
     if (!item) {
@@ -1206,6 +1773,59 @@ export class CrisApp {
     const sheetId = button.dataset.sheetId;
     try {
       switch (action) {
+        case "open-initiative": {
+          this.state.mode = "initiative";
+          if (this.state.role === "GM") this.state.masterRoster = await loadMasterRoster(false);
+          await this.refreshInitiativeData();
+          break;
+        }
+        case "initiative-add-selected":
+          await this.openInitiativeAddDialog();
+          break;
+        case "initiative-close-add":
+          this.root.querySelector<HTMLDialogElement>("#initiative-add-dialog")?.close();
+          break;
+        case "initiative-close-edit":
+          this.root.querySelector<HTMLDialogElement>("#initiative-edit-dialog")?.close();
+          break;
+        case "initiative-roll":
+          await this.rollInitiative();
+          break;
+        case "initiative-resolve-ties":
+          await this.resolveInitiativeTies();
+          break;
+        case "initiative-start":
+          await this.startInitiativeCombat();
+          break;
+        case "initiative-next":
+          await this.changeInitiativeTurn(1);
+          break;
+        case "initiative-previous":
+          await this.changeInitiativeTurn(-1);
+          break;
+        case "initiative-end":
+          await this.endInitiativeCombat();
+          break;
+        case "initiative-clear":
+          await this.clearInitiative();
+          break;
+        case "initiative-edit":
+          if (button.dataset.id) this.openInitiativeEditor(button.dataset.id);
+          break;
+        case "initiative-toggle-surprised":
+          if (button.dataset.id) await this.toggleInitiativeSurprised(button.dataset.id);
+          break;
+        case "initiative-remove":
+          if (this.state.role === "GM" && button.dataset.id) await this.removeInitiativeEntry(button.dataset.id);
+          break;
+        case "initiative-activate": {
+          if (this.state.role !== "GM" || !button.dataset.id) return;
+          if (!this.state.initiativeScene.started) return this.toast("Inicie o combate antes de ativar um turno.", "warning");
+          const next = selectInitiativeTurn(this.state.initiativeEntries, this.state.initiativeScene, button.dataset.id);
+          if (next.activeId !== button.dataset.id) return this.toast("Este participante não pode agir nesta rodada.", "warning");
+          await this.persistInitiativeScene(next);
+          break;
+        }
         case "master-panel": {
           if (this.state.role !== "GM") return this.toast("O painel de operação é exclusivo do Mestre.", "error");
           this.stopPolling();

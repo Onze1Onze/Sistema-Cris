@@ -1,6 +1,6 @@
-# Sistema C.R.I.S. — extensão automática para Owlbear Rodeo
+# Sistema C.R.I.S. — dossiês e protocolo de combate para Owlbear Rodeo
 
-Extensão vertical para consultar fichas públicas do C.R.I.S. diretamente dentro do Owlbear Rodeo. O fluxo é: cole o link de uma ficha, conecte, e o Sistema C.R.I.S. busca os dados do personagem e preenche o dossiê. Não é necessário copiar ou importar JSON manualmente.
+Extensão unificada para consultar fichas públicas do C.R.I.S., rolar atributos e perícias e conduzir o combate de Ordem Paranormal dentro do Owlbear Rodeo. O C.R.I.S. é a fonte principal dos dados dos agentes; o rastreador de iniciativa usa esses atributos e bônus sem manter uma ficha paralela ou recalcular o treinamento.
 
 ## Instalação no Owlbear Rodeo
 
@@ -16,6 +16,7 @@ O endereço do manifesto publicado é:
 6. Clique em **CONECTAR FICHA**. A extensão consulta os dados públicos e abre o dossiê automaticamente.
 7. Para associar ao Token, selecione um Token e use **VINCULAR / SUBSTITUIR FICHA C.R.I.S.** no menu contextual, ou abra a ficha já cadastrada e escolha **VINCULAR**.
 8. Ao clicar no Token depois, a ficha vinculada será carregada dentro do Owlbear.
+9. Use o botão **INICIATIVA** no cabeçalho do C.R.I.S. para abrir o protocolo de combate unificado. O painel está disponível para a sala; os controles de operação são exclusivos do Mestre.
 
 ## O que é importado
 
@@ -179,9 +180,45 @@ O histórico utiliza a metadata da cena sob a chave `com.onze1onze.sistema-cris/
 
 O histórico é gravado pelo Mestre. Para persistir rolagens realizadas por jogadores, a extensão do Mestre precisa estar aberta e conectada à sala para receber o Broadcast e registrar o evento na metadata sincronizada. O canal Broadcast não entrega eventos retroativamente a quem entrou depois.
 
-### Combate e recursos
+### Protocolo de combate e iniciativa integrada
 
-A seção de combate mostra os valores e condições disponíveis. Dano, cura, perda/recuperação de SAN, alteração de PE, inventário editável e adicionar/remover condições permanecem bloqueados enquanto não houver uma operação de escrita oficial e autorizada do C.R.I.S. A interface não altera o cache para fingir que o C.R.I.S. confirmou uma operação. Não existe botão de desfazer remoto nesta versão.
+O rastreador de iniciativa do antigo projeto **Sistema-Iniciativa** foi incorporado ao C.R.I.S. como uma área nativa da mesma extensão. A interface usa as cores, tipografia, componentes de dossiê e organização visual do C.R.I.S.; o rastreador não abre uma segunda extensão nem mantém uma ficha alternativa para agentes.
+
+**Agentes — dados provenientes da ficha C.R.I.S.**
+
+- Ao adicionar Tokens como agentes, o Mestre deve selecionar Tokens já vinculados a fichas C.R.I.S. acessíveis.
+- O sistema localiza a perícia **Iniciativa** na ficha e lê a Agilidade e o bônus total da perícia normalizados pelo parser do C.R.I.S.
+- A rolagem é executada pelo motor já utilizado nas rolagens de perícias do C.R.I.S.: um d20 por ponto do atributo, mantendo o maior; com AGI 0, 2d20 mantendo o menor.
+- O bônus já calculado pela ficha é utilizado integralmente. O módulo não soma novamente os níveis de treinamento (+5/+10/+15), evitando bônus duplicados.
+- Modificadores situacionais são guardados separadamente e adicionados ao teste sem alterar a ficha remota.
+- Se a perícia Iniciativa ou a Agilidade não puderem ser identificadas com segurança, o teste é bloqueado e a interface informa o problema em vez de inventar um valor.
+
+**Ameaças e grupos**
+
+- O Mestre pode selecionar vários Tokens e registrá-los como um único grupo de ameaças.
+- Se todos os Tokens do grupo tiverem fichas C.R.I.S. acessíveis e a perícia Iniciativa válida, o módulo utiliza automaticamente o menor bônus de Iniciativa do grupo.
+- Caso contrário, o Mestre informa o bônus manual do grupo.
+- O grupo realiza um único teste compartilhado de 1d20 + bônus, preservando o comportamento do Sistema-Iniciativa.
+
+**Controle do combate**
+
+- Ordem decrescente dos resultados, identificação e nova rolagem de empates.
+- Cartão do turno atual, progresso da sequência, avanço e retorno de turno.
+- Rodadas, encerramento e limpeza da ocorrência.
+- Surpreendidos não agem na primeira rodada.
+- Participantes recrutados depois do início ficam elegíveis a partir da rodada seguinte.
+- A iniciativa permanece fixa entre rodadas; não é rolada novamente a cada turno.
+- Condições fornecidas pela ficha C.R.I.S. aparecem no cartão de combate. O Mestre também pode adicionar condições e notas locais ao registro tático.
+
+**Sincronização e compatibilidade**
+
+A metadata do combate usa as chaves `com.onze1onze.sistema-cris/initiative-combatant` nos Tokens e `com.onze1onze.sistema-cris/initiative-scene` na cena. O vínculo C.R.I.S. continua em sua própria chave e não é substituído pelo estado da iniciativa.
+
+O módulo reconhece os registros e o estado de cena da antiga extensão `com.onze1onze.sistema-iniciativa`. Ao abrir uma cena anterior, os valores de iniciativa existentes são lidos; novos testes de agentes passam a usar a ficha C.R.I.S. vinculada. Registros antigos sem uma ficha acessível podem manter o resultado anterior, mas precisam de uma ficha válida para realizar uma nova rolagem automática.
+
+Somente o Mestre pode adicionar participantes, realizar rolagens, alterar registros e controlar os turnos. Os jogadores recebem a ordem e os resultados de iniciativa pela metadata da sala, respeitando as regras de compartilhamento das fichas C.R.I.S. Os dados detalhados de uma ficha continuam privados até que o Mestre autorize seu compartilhamento.
+
+Dano, cura, perda/recuperação de SAN, alteração de PE e inventário editável continuam bloqueados enquanto não houver uma operação de escrita oficial e autorizada do C.R.I.S. A iniciativa não altera PV, PE ou SAN.
 
 ### Permissões
 
@@ -218,6 +255,7 @@ Manifesto publicado: `https://onze1onze.github.io/Sistema-Cris/manifest.json`.
 - `src/cris/crisWrite.ts`: matriz explícita de capacidades de escrita; PV, PE e SAN ficam bloqueados até haver autorização verificável.
 - `src/cris/crisConflict.ts`: pré-verificação de conflitos para uma possível integração de escrita futura.
 - `src/rolls/`: tipos genéricos de rolagem, motor d20 e construção de testes de atributo/perícia.
+- `src/initiative/`: derivação de iniciativa a partir de fichas C.R.I.S., regras de agentes/ameaças, metadados, rodadas, empates e migração de registros antigos.
 - `src/master-panel/`: lista de Tokens vinculados, filtros, consulta e localização.
 - `src/conditions/`: marcadores locais anexados aos Tokens quando a ficha fornece condições.
 - `src/history/`: histórico limitado de eventos da sessão na metadata da cena.
