@@ -1298,7 +1298,16 @@ export class CrisApp {
   }
 
   private async handleSubmit(event: Event): Promise<void> {
-    if (!(event.target instanceof HTMLFormElement) || event.target.id !== "connect-form") return;
+    if (!(event.target instanceof HTMLFormElement)) return;
+    if (event.target.id === "initiative-add-form") {
+      await this.submitInitiativeAdd(event);
+      return;
+    }
+    if (event.target.id === "initiative-edit-form") {
+      await this.submitInitiativeEdit(event);
+      return;
+    }
+    if (event.target.id !== "connect-form") return;
     event.preventDefault();
     if (this.state.role !== "GM") return this.toast("Somente o Mestre pode cadastrar fichas.", "error");
     const input = this.root.querySelector<HTMLInputElement>("#cris-url");
@@ -1338,6 +1347,7 @@ export class CrisApp {
       }
       this.state.syncStatus = "SYNCED";
       this.state.lastSyncAt = Date.now();
+      await this.refreshInitiativeData();
       this.toast(result.message, "success");
       this.startPolling();
     } catch (error) {
@@ -1394,11 +1404,13 @@ export class CrisApp {
       ].slice(0, 30);
     }
     persistence.save(reconciliation.sheet);
+    void this.refreshInitiativeData();
     void syncConditionMarkers(this.state.role);
     this.render();
   }
 
   private handleSceneItemsChanged(items: SceneItem[]): void {
+    void this.refreshInitiativeData(items);
     if (!this.state.tokenId) return;
     const item = items.find((candidate) => candidate.id === this.state.tokenId);
     if (!item) {
@@ -1752,6 +1764,59 @@ export class CrisApp {
     const sheetId = button.dataset.sheetId;
     try {
       switch (action) {
+        case "open-initiative": {
+          this.state.mode = "initiative";
+          await this.refreshInitiativeData();
+          break;
+        }
+        case "initiative-add-selected":
+          await this.openInitiativeAddDialog();
+          break;
+        case "initiative-close-add":
+          this.root.querySelector<HTMLDialogElement>("#initiative-add-dialog")?.close();
+          break;
+        case "initiative-close-edit":
+          this.root.querySelector<HTMLDialogElement>("#initiative-edit-dialog")?.close();
+          break;
+        case "initiative-roll":
+          await this.rollInitiative();
+          break;
+        case "initiative-resolve-ties":
+          await this.resolveInitiativeTies();
+          break;
+        case "initiative-start":
+          await this.startInitiativeCombat();
+          break;
+        case "initiative-next":
+          await this.changeInitiativeTurn(1);
+          break;
+        case "initiative-previous":
+          await this.changeInitiativeTurn(-1);
+          break;
+        case "initiative-end":
+          await this.endInitiativeCombat();
+          break;
+        case "initiative-clear":
+          await this.clearInitiative();
+          break;
+        case "initiative-edit":
+          if (sheetId) this.openInitiativeEditor(button.dataset.id ?? "");
+          else this.openInitiativeEditor(button.dataset.id ?? "");
+          break;
+        case "initiative-toggle-surprised":
+          if (button.dataset.id) await this.toggleInitiativeSurprised(button.dataset.id);
+          break;
+        case "initiative-remove":
+          if (this.state.role === "GM" && button.dataset.id) await this.removeInitiativeEntry(button.dataset.id);
+          break;
+        case "initiative-activate": {
+          if (this.state.role !== "GM" || !button.dataset.id) return;
+          if (!this.state.initiativeScene.started) return this.toast("Inicie o combate antes de ativar um turno.", "warning");
+          const next = selectInitiativeTurn(this.state.initiativeEntries, this.state.initiativeScene, button.dataset.id);
+          if (next.activeId !== button.dataset.id) return this.toast("Este participante não pode agir nesta rodada.", "warning");
+          await this.persistInitiativeScene(next);
+          break;
+        }
         case "master-panel": {
           if (this.state.role !== "GM") return this.toast("O painel de operação é exclusivo do Mestre.", "error");
           this.stopPolling();
