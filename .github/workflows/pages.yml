@@ -30,8 +30,6 @@ jobs:
           unzip -o source-ui-style.zip -d .
           unzip -o source-docs.zip -d .
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - run: npm install --no-audit --no-fund
       - run: npm test
       - run: npm run build
