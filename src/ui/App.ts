@@ -574,8 +574,7 @@ function renderInitiativePanel(state: AppState): string {
     const roll = data.roll
       ? `${data.roll.dice.length}d20 [${data.roll.dice.join(" · ")}] · ${data.roll.keep === "lowest" ? "MENOR" : "MAIOR"} ${data.roll.selected} ${data.roll.bonus >= 0 ? "+" : ""}${data.roll.bonus} = ${data.roll.total}`
       : data.initiative !== null ? `RESULTADO LEGADO ${data.initiative} · ROLE NOVAMENTE` : "TESTE DE INICIATIVA PENDENTE";
-    const firstMember = entry.members[0];
-    const portraitUrl = firstMember?.type === "IMAGE" ? firstMember.image?.url : undefined;
+    const portraitUrl = entry.sheet?.portraitUrl;
     const portraitMarkup = portraitUrl && /^https?:\/\//i.test(portraitUrl)
       ? `<img class="initiative-portrait" src="${escapeHtml(portraitUrl)}" alt="" loading="lazy">`
       : `<span class="initiative-portrait fallback">${escapeHtml((data.displayName || entry.name).slice(0, 2).toLocaleUpperCase("pt-BR"))}</span>`;
