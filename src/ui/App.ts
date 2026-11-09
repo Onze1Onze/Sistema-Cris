@@ -167,19 +167,6 @@ function renderSyncBanner(state: AppState): string {
   </div>`;
 }
 
-function renderHeader(state: AppState): string {
-  const modeLabel = state.role === "GM" ? "ACESSO DO MESTRE" : "ACESSO DO JOGADOR";
-  const initiativeAction = state.mode === "initiative"
-    ? `<button class="header-action" data-action="back-library" type="button">ARQUIVO</button>`
-    : `<button class="header-action" data-action="open-initiative" type="button">INICIATIVA</button>`;
-  return `<header class="topbar">
-    <div class="brand-seal" aria-hidden="true"><span>✦</span><i></i></div>
-    <div class="brand-copy"><div class="micro-label">ORDEM REALITAS // ARQUIVO DIGITAL</div><div class="brand-title">SISTEMA <b>C.R.I.S.</b></div></div>
-    ${initiativeAction}<div class="header-stamp"><span class="status-light"></span><span>${modeLabel}</span></div>
-  </header>
-  <div class="subbar"><span>REGISTRO DE AGENTES</span><span>///</span><span>INTERFACE DE CAMPO v1.4</span></div>`;
-}
-
 function renderNavigation(active: ViewTab, role: AppState["role"]): string {
   const tabs: Array<[ViewTab, string, string]> = [
     ["overview", "◈", "PERSONAGEM"],
@@ -528,7 +515,7 @@ function renderMasterPanel(state: AppState): string {
 
 function renderLibrary(state: AppState): string {
   const cards = state.library.map((reference) => renderLibraryCard(reference, persistence.get(reference.id), state)).join("");
-  return `${state.role === "GM" ? `<button class="button secondary full master-open-button" data-action="master-panel">▦ ABRIR PAINEL DE OPERAÇÃO DO MESTRE</button>` : ""}
+  return `<div class="library-tools">${state.role === "GM" ? `<button class="button secondary" data-action="master-panel">PAINEL DO MESTRE</button>` : ""}<button class="button secondary" data-action="open-initiative">INICIATIVA</button></div>
   <section class="connect-panel">
       <div class="connect-intro"><div class="cris-emblem"><span>✦</span><strong>C.R.I.S.</strong><small>CONEXÃO EXTERNA</small></div>
         <div><div class="micro-label">PROTOCOLO DE ACESSO</div><h1>Conecte sua ficha do C.R.I.S.</h1><p>Cole o link público. A extensão consulta e importa os dados automaticamente.</p></div>
@@ -673,7 +660,6 @@ function renderApp(state: AppState): string {
     : state.mode === "master" ? "PAINEL DO MESTRE"
     : state.mode === "initiative" ? "PROTOCOLO DE COMBATE"
     : "DOSSIÊ DO AGENTE";
-  const header = renderHeader(state);
   const body = state.mode === "initiative"
     ? renderInitiativePanel(state)
     : state.mode === "library"
@@ -683,7 +669,7 @@ function renderApp(state: AppState): string {
         : state.sheet
         ? `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title} ${state.token ? `// ${escapeHtml(state.token.name ?? "TOKEN")}` : ""}</div><h1>Ficha do Personagem</h1><p>Registro de campo associado ao C.R.I.S.</p></section>${renderNavigation(state.activeTab, state.role)}<main class="sheet-content">${renderSheetContent(state)}</main>`
         : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title}</div><h1>Vincular ficha ao Token</h1><p>${escapeHtml(state.token?.name ?? "Token selecionado")}</p></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
-  return `<div class="app-shell">${header}<main class="content">${renderSyncBanner(state)}${body}${state.mode === "token" || state.mode === "master" ? renderRollFeed(state) : ""}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.4.0 · ${state.role}</span></footer>${renderRollDialog(state)}</div>`;
+  return `<div class="app-shell"><main class="content">${renderSyncBanner(state)}${body}${state.mode === "token" || state.mode === "master" ? renderRollFeed(state) : ""}${renderToast(state.toast)}</main>${renderRollDialog(state)}</div>`;
 }
 
 function parseRollBroadcast(value: unknown): RollBroadcastMessage | undefined {
