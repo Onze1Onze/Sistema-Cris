@@ -32,6 +32,7 @@ import {
   INITIATIVE_SCENE_KEY,
   INITIATIVE_TOKEN_KEY,
   LEGACY_INITIATIVE_SCENE_KEY,
+  LEGACY_INITIATIVE_TOKEN_KEY,
   advanceInitiativeTurn,
   buildInitiativeEntries,
   createInitiativeRollSnapshot,
@@ -958,6 +959,8 @@ export class CrisApp {
           if (!data) continue;
           item.metadata = item.metadata ?? {};
           item.metadata[INITIATIVE_TOKEN_KEY] = data;
+          delete item.metadata[LEGACY_INITIATIVE_TOKEN_KEY];
+          delete item.metadata[LEGACY_INITIATIVE_TOKEN_KEY];
         }
       });
       this.pendingInitiativeTokenIds = [];
@@ -974,6 +977,7 @@ export class CrisApp {
       for (const item of draftItems) {
         item.metadata = item.metadata ?? {};
         item.metadata[INITIATIVE_TOKEN_KEY] = { version: 1, combatant: next };
+        delete item.metadata[LEGACY_INITIATIVE_TOKEN_KEY];
       }
     });
     await this.refreshInitiativeData();
@@ -1142,7 +1146,10 @@ export class CrisApp {
     const tokenIds = this.state.initiativeEntries.flatMap((entry) => entry.tokenIds);
     await OBR.scene.items.updateItems(tokenIds, (draftItems) => {
       for (const item of draftItems) {
-        if (item.metadata) delete item.metadata[INITIATIVE_TOKEN_KEY];
+        if (item.metadata) {
+          delete item.metadata[INITIATIVE_TOKEN_KEY];
+          delete item.metadata[LEGACY_INITIATIVE_TOKEN_KEY];
+        }
       }
     });
     await this.persistInitiativeScene({ ...DEFAULT_INITIATIVE_SCENE, changedAt: Date.now() });
