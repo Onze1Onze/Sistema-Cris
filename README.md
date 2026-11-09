@@ -1,29 +1,58 @@
 # Conexão com CRIS — extensão para Owlbear Rodeo
 
-Extensão vertical para importar fichas públicas do C.R.I.S., exibi-las em um painel temático de Ordem Paranormal e vinculá-las a Tokens do Owlbear Rodeo.
+Extensão vertical para importar fichas públicas do C.R.I.S., exibi-las como dossiês de investigação inspirados em Ordem Paranormal e vinculá-las a Tokens do Owlbear Rodeo.
 
-## Código-fonte
+## Estado da implementação
 
-O projeto modular completo está no arquivo **[conexao-com-cris-source.zip](./conexao-com-cris-source.zip)**. Baixe o arquivo e extraia seu conteúdo para obter a estrutura TypeScript, interface, parser, cache, sincronização, testes e documentação.
+O repositório contém a primeira implementação modular. Os módulos TypeScript estão divididos em arquivos ZIP para facilitar a publicação: `source-core.zip`, `source-sync.zip`, `source-ui-shell.zip`, `source-ui-style.zip` e `source-docs.zip`. O ponto de entrada visual `src/ui/app.ts` está diretamente no repositório.
 
-## Situação da integração CRIS
+## Preparar o código-fonte
 
-A importação tenta consultar um caminho público do Firestore observado em um adaptador comunitário e, em seguida, tenta ler o HTML público da ficha (metadados Open Graph, JSON embutido, rótulos e seções). O endpoint Firestore não é apresentado como API oficial do CRIS e pode mudar. O acesso direto depende de a origem permitir CORS; não há proxy, cookies, credenciais nem contorno de autenticação. Quando a origem bloquear o navegador, a extensão informa a limitação e mantém a última cópia em cache.
+Requer Node.js 20+ e npm. Extraia os módulos na raiz do repositório:
 
-## Desenvolvimento
+- `unzip -o source-core.zip -d .`
+- `unzip -o source-sync.zip -d .`
+- `unzip -o source-ui-shell.zip -d .`
+- `unzip -o source-ui-style.zip -d .`
+- `unzip -o source-docs.zip -d .`
 
-Requer Node.js 20 ou superior.
+Depois execute:
 
 - `npm install`
-- `npm run build`
 - `npm test`
+- `npm run build`
 
-O resultado do build fica em `dist/`; hospede essa pasta em HTTPS e registre o `manifest.json` público no Owlbear Rodeo.
+A build é gerada em `dist/`.
 
-## Persistência e sincronização
+## Importação do CRIS: limitação importante
 
-As fichas são sincronizadas no metadata da cena do Owlbear, sem guardar imagens binárias nesse metadata. Cache IndexedDB mantém uma cópia local de contingência. O metadata da sala tem limites próprios; por isso o projeto utiliza metadata da cena para o estado compartilhado e evita incorporar retratos em base64.
+A extensão aceita links públicos no formato `https://crisordemparanormal.com/agente/{id}`. O adaptador consulta, em modo best-effort e sem credenciais, um caminho REST do Firestore observado em um projeto comunitário público e tenta analisar o HTML da página como alternativa.
 
-## Licença
+Esse caminho **não é uma API oficial documentada pelo CRIS** e não há garantia de acesso público ou CORS. O código não usa cookies, senhas, tokens, proxy ou qualquer tentativa de contornar autenticação. A importação real precisa ser validada no navegador com fichas públicas atuais; quando a origem bloquear o acesso, a extensão preserva o último cache válido e informa a falha.
 
-MIT. Consulte `LICENSE` no arquivo-fonte.
+## Persistência
+
+As fichas e alterações de sessão são sincronizadas nos metadados da cena atual do Owlbear. O Token guarda apenas o identificador da ficha em seus próprios metadados, mantendo o vínculo ao mover o Token. O cache IndexedDB/localStorage é local ao navegador. Metadados da cena não devem ser confundidos com metadados da sala; a extensão não armazena documentos completos em `OBR.room`.
+
+## Publicar pelo GitHub Pages
+
+O workflow `.github/workflows/pages.yml` faz a extração dos módulos, instala dependências, executa testes/build e publica `dist/`.
+
+1. Abra **Settings → Pages** no GitHub.
+2. Selecione **GitHub Actions** em *Build and deployment*.
+3. Verifique a execução em **Actions**.
+4. Quando a publicação estiver concluída, cadastre no Owlbear o manifesto em:
+   `https://Onze1Onze.github.io/Sistema-Conex-o-com-Cris/manifest.json`
+
+A URL só estará disponível depois de o GitHub Pages estar habilitado e o workflow terminar com sucesso.
+
+## Documentação
+
+A documentação técnica está em `source-docs.zip`: arquitetura, importação do CRIS e checklist de testes manuais.
+
+## Referências
+
+- [Documentação oficial do Owlbear Rodeo](https://docs.owlbear.rodeo/extensions/)
+- [SDK oficial do Owlbear Rodeo](https://github.com/owlbear-rodeo/sdk)
+- [C.R.I.S. — site oficial](https://crisordemparanormal.com/)
+- [Projeto comunitário de visualização de fichas CRIS](https://github.com/LucasPennacchi/visualizador_de_fichas)
