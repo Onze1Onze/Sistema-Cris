@@ -1,0 +1,76 @@
+name: Sync static extension files to the Pages branch
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages-root-sync
+  cancel-in-progress: false
+
+jobs:
+  publish-root:
+    if: ${{ !contains(github.event.head_commit.message, '[pages root]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Extract application modules
+        run: |
+          unzip -o source-core.zip -d .
+          unzip -o source-sync.zip -d .
+          unzip -o source-ui-shell.zip -d .
+          unzip -o source-ui-style.zip -d .
+          unzip -o source-docs.zip -d .
+      - name: Apply maintained interface
+        run: |
+          base64 --decode source-ui-fix.zip.b64 > /tmp/source-ui-fix.zip
+          unzip -o /tmp/source-ui-fix.zip -d .
+      - name: Install, test and build
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+          npm run build
+      - name: Version manifest and prepare branch-based Pages root
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const path = 'dist/manifest.json';
+          const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
+          manifest.version = '0.2.1';
+          manifest.name = 'Conexão com CRIS';
+          manifest.description = 'Importe fichas públicas do C.R.I.S. e visualize os dados do agente em um dossiê no Owlbear Rodeo.';
+          manifest.action = {
+            ...manifest.action,
+            title: 'Conexão com CRIS',
+            width: 390,
+            height: 720
+          };
+          fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\\n');
+          NODE
+          test -s dist/manifest.json
+          test -s dist/index.html
+          test -s dist/icon.svg
+          rm -rf assets
+          cp dist/manifest.json .
+          cp dist/index.html .
+          cp dist/icon.svg .
+          cp -R dist/assets ./assets
+          touch .nojekyll
+      - name: Commit static website files for branch-based Pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .nojekyll manifest.json index.html icon.svg assets
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: publish Pages root [pages root]"
+            git push origin main
+          fi
