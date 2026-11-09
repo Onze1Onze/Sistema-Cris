@@ -481,8 +481,6 @@ export class CrisApp {
   }
 
   private async handleClick(event: Event): Promise<void> {
-
-  private async handleClick(event: Event): Promise<void> {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-action],button[data-tab]");
     if (!button || button.disabled) return;
     const tab = button.dataset.tab as ViewTab | undefined;
