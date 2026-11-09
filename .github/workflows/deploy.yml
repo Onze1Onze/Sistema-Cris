@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -48,6 +49,59 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Wait for legacy branch Pages build to finish
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs"
+          legacy_run_id=""
+
+          # When Pages is still configured to publish the branch, GitHub starts
+          # a separate Jekyll deployment for the same commit. Wait for it so
+          # this workflow can publish the compiled dist/ artifact afterwards.
+          for attempt in $(seq 1 20); do
+            response=$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "${api}?per_page=50")
+            legacy_run_id=$(printf '%s' "${response}" | jq -r \
+              --arg sha "${GITHUB_SHA}" \
+              '[.workflow_runs[] | select(.path == "dynamic/pages/pages-build-deployment" and .head_sha == $sha)][0].id // empty')
+
+            if [ -n "${legacy_run_id}" ]; then
+              echo "Found the legacy Pages build for commit ${GITHUB_SHA}: run ${legacy_run_id}"
+              break
+            fi
+            sleep 3
+          done
+
+          if [ -z "${legacy_run_id}" ]; then
+            echo "No competing branch-based Pages build was found. Continuing with the compiled artifact."
+            exit 0
+          fi
+
+          for attempt in $(seq 1 120); do
+            run=$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "${api}/${legacy_run_id}")
+            status=$(printf '%s' "${run}" | jq -r '.status')
+            conclusion=$(printf '%s' "${run}" | jq -r '.conclusion // empty')
+
+            if [ "${status}" = "completed" ]; then
+              echo "Legacy Pages deployment finished (${conclusion}). The compiled dist/ deployment will now run last."
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "The legacy Pages build did not finish in time; refusing to race it with the compiled deployment."
+          exit 1
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
