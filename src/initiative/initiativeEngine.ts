@@ -4,6 +4,8 @@ import { getSkillAttribute } from "../rolls/rollService";
 
 export const INITIATIVE_TOKEN_KEY = "com.onze1onze.sistema-cris/initiative-combatant";
 export const INITIATIVE_SCENE_KEY = "com.onze1onze.sistema-cris/initiative-scene";
+export const LEGACY_INITIATIVE_TOKEN_KEY = "com.onze1onze.sistema-iniciativa/combatant";
+export const LEGACY_INITIATIVE_SCENE_KEY = "com.onze1onze.sistema-iniciativa/combat";
 
 export type InitiativeRole = "AGENT" | "THREAT";
 export type InitiativeKeep = "highest" | "lowest";
@@ -149,9 +151,21 @@ export function normalizeInitiativeScene(value: unknown): InitiativeSceneState {
 }
 
 export function readInitiativeCombatant(item: SceneItem | undefined): InitiativeCombatant | undefined {
-  const raw = item?.metadata?.[INITIATIVE_TOKEN_KEY] as Partial<InitiativeTokenMetadata> | undefined;
-  if (!raw || raw.version !== 1 || !raw.combatant || typeof raw.combatant !== "object") return undefined;
-  return normalizeInitiativeCombatant(raw.combatant);
+  const current = item?.metadata?.[INITIATIVE_TOKEN_KEY] as Partial<InitiativeTokenMetadata> | undefined;
+  if (current?.version === 1 && current.combatant && typeof current.combatant === "object") {
+    return normalizeInitiativeCombatant(current.combatant);
+  }
+
+  // Compatibilidade com o namespace da extensão Sistema-Iniciativa anterior.
+  // Os campos antigos de AGI/treinamento nunca substituem os dados da ficha C.R.I.S.
+  const legacy = item?.metadata?.[LEGACY_INITIATIVE_TOKEN_KEY];
+  if (!legacy || typeof legacy !== "object") return undefined;
+  const value = legacy as Record<string, unknown>;
+  return normalizeInitiativeCombatant({
+    ...value,
+    modifier: value.modifier ?? value.bonus ?? 0,
+    threatBonus: value.threatBonus ?? 0,
+  });
 }
 
 function normalizeSkillName(name: string): string {
