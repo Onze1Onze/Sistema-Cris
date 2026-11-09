@@ -24,6 +24,12 @@ function replaceBrand(source) {
 updateFile("src/ui/app.ts", replaceBrand);
 updateFile("src/main.ts", replaceBrand);
 
+updateFile("index.html", (source) => source
+  .replace('<meta name="description" content="Arquivo de agentes — integração comunitária entre C.R.I.S. e Owlbear Rodeo." />',
+           '<meta name="description" content="Sistema-Cris — arquivo de agentes e integração comunitária entre C.R.I.S. e Owlbear Rodeo." />')
+  .replace("<title>Conexão com CRIS</title>", "<title>Sistema-Cris</title>")
+);
+
 updateFile("public/manifest.json", (source) => {
   const manifest = JSON.parse(source);
   manifest.name = "Sistema-Cris";
