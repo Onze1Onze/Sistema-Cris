@@ -5,7 +5,7 @@
   "description": "Importe fichas públicas do C.R.I.S. e visualize os dados do agente em um dossiê no Owlbear Rodeo.",
   "author": "Onze1Onze",
   "icon": "./icon.svg",
-  "homepage_url": "https://github.com/Onze1Onze/Sistema-Conex-o-com-Cris",
+  "homepage_url": "https://github.com/Onze1Onze/Sistema-Cris",
   "action": {
     "title": "Sistema-Cris",
     "icon": "./icon.svg",
