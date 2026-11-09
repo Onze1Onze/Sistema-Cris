@@ -1,58 +1,57 @@
 # Conexão com CRIS — extensão para Owlbear Rodeo
 
-Extensão vertical para importar fichas públicas do C.R.I.S., exibi-las como dossiês de investigação inspirados em Ordem Paranormal e vinculá-las a Tokens do Owlbear Rodeo.
+Extensão para importar fichas públicas do C.R.I.S., apresentar o dossiê completo em um painel vertical do Owlbear Rodeo e vincular o registro a um Token da cena.
 
-## Estado da implementação
+**Versão da interface:** 0.2.0
 
-O repositório contém a primeira implementação modular. Os módulos TypeScript estão divididos em arquivos ZIP para facilitar a publicação: `source-core.zip`, `source-sync.zip`, `source-ui-shell.zip`, `source-ui-style.zip` e `source-docs.zip`. O ponto de entrada visual `src/ui/app.ts` está diretamente no repositório.
+## Instalar no Owlbear
 
-## Preparar o código-fonte
+1. Abra o Owlbear Rodeo e entre em uma sala.
+2. Em Extensions, adicione uma extensão usando o manifesto:
+   `https://onze1onze.github.io/Sistema-Conex-o-com-Cris/manifest.json`
+3. Na barra de ações da sala, abra **Conexão com CRIS**. Não selecione outra extensão, como “Munição”.
+4. O campo de link fica visível logo ao abrir o arquivo. Cole o endereço público de uma ficha CRIS e pressione **IMPORTAR FICHA**.
+5. Depois da importação, o dossiê abre com os dados disponíveis: retrato, identidade, atributos, recursos, combate, perícias, poderes, habilidades, rituais, armas, equipamentos e inventário. Campos ainda não reconhecidos são preservados em **Informações adicionais**.
 
-Requer Node.js 20+ e npm. Extraia os módulos na raiz do repositório:
+O nome da ficha, a classe e o conteúdo dependem dos dados públicos que o CRIS disponibiliza para aquele agente. Apenas o Mestre pode importar, atualizar, remover e alterar o estado temporário da sessão; jogadores visualizam as fichas compartilhadas na cena.
 
-- `unzip -o source-core.zip -d .`
-- `unzip -o source-sync.zip -d .`
-- `unzip -o source-ui-shell.zip -d .`
-- `unzip -o source-ui-style.zip -d .`
-- `unzip -o source-docs.zip -d .`
+## O que está implementado
 
-Depois execute:
+- Painel vertical responsivo, com rolagem própria para celulares e telas estreitas.
+- Formulário de importação apresentado por padrão quando o painel é aberto.
+- Validação de links HTTPS de fichas no formato `https://crisordemparanormal.com/agente/{id}`.
+- Leitura pública do documento Firestore, decodificação de mapas/listas/tipos e normalização dos campos de personagem.
+- Parser de HTML público como alternativa para páginas que exponham metadados úteis.
+- Dossiê recolhível com retrato, identidade, PV/PE/SAN/DT, atributos, combate, perícias, habilidades, rituais, armas, equipamentos, inventário e dados adicionais.
+- Cards compactos, atualização manual e atualização automática opcional enquanto o painel estiver aberto.
+- Vínculo de ficha com Token e atalho contextual **Abrir ficha do CRIS**.
+- Estado temporário de PV/PE/SAN/DT e condição, sem escrever de volta na ficha original do CRIS.
+- Cache local e sincronização da biblioteca nos metadados da cena atual.
 
-- `npm install`
-- `npm test`
-- `npm run build`
+## Integração com CRIS: limitação técnica
 
-A build é gerada em `dist/`.
+O CRIS não disponibiliza uma especificação oficial documentada de API para leitura externa de fichas. A extensão usa um caminho REST do Firestore observado no adaptador comunitário público [visualizador_de_fichas](https://github.com/LucasPennacchi/visualizador_de_fichas) e tenta analisar o HTML público como alternativa.
 
-## Importação do CRIS: limitação importante
+Esse caminho pode mudar e o acesso depende das regras públicas e de CORS do serviço. A extensão não usa login, senha, cookies, tokens, proxy de terceiros nem tenta contornar fichas privadas. Quando a origem bloqueia a leitura ou não fornece dados suficientes, o painel mostra uma mensagem de erro em vez de inventar informações.
 
-A extensão aceita links públicos no formato `https://crisordemparanormal.com/agente/{id}`. O adaptador consulta, em modo best-effort e sem credenciais, um caminho REST do Firestore observado em um projeto comunitário público e tenta analisar o HTML da página como alternativa.
+## Arquivos-fonte e build
 
-Esse caminho **não é uma API oficial documentada pelo CRIS** e não há garantia de acesso público ou CORS. O código não usa cookies, senhas, tokens, proxy ou qualquer tentativa de contornar autenticação. A importação real precisa ser validada no navegador com fichas públicas atuais; quando a origem bloquear o acesso, a extensão preserva o último cache válido e informa a falha.
+Os módulos de base permanecem organizados em `source-core.zip`, `source-sync.zip`, `source-ui-shell.zip`, `source-ui-style.zip` e `source-docs.zip`. O bundle `source-ui-fix.zip.b64` contém a versão atualizada da interface, do CSS responsivo e do manifesto, substituindo a implementação visual antiga.
 
-## Persistência
+Para preparar o projeto localmente, extraia os módulos acima na raiz do repositório e aplique a interface atualizada com:
+`base64 --decode source-ui-fix.zip.b64 > /tmp/source-ui-fix.zip && unzip -o /tmp/source-ui-fix.zip -d .`
 
-As fichas e alterações de sessão são sincronizadas nos metadados da cena atual do Owlbear. O Token guarda apenas o identificador da ficha em seus próprios metadados, mantendo o vínculo ao mover o Token. O cache IndexedDB/localStorage é local ao navegador. Metadados da cena não devem ser confundidos com metadados da sala; a extensão não armazena documentos completos em `OBR.room`.
+Depois execute `npm install`, `npm test` e `npm run build`. A build é gerada em `dist/`.
 
-## Publicar pelo GitHub Pages
+O CI e o GitHub Pages executam essa preparação automaticamente antes de testar e publicar a extensão.
 
-O workflow `.github/workflows/pages.yml` faz a extração dos módulos, instala dependências, executa testes/build e publica `dist/`.
+## Persistência e permissões
 
-1. Abra **Settings → Pages** no GitHub.
-2. Selecione **GitHub Actions** em *Build and deployment*.
-3. Verifique a execução em **Actions**.
-4. Quando a publicação estiver concluída, cadastre no Owlbear o manifesto em:
-   `https://Onze1Onze.github.io/Sistema-Conex-o-com-Cris/manifest.json`
-
-A URL só estará disponível depois de o GitHub Pages estar habilitado e o workflow terminar com sucesso.
-
-## Documentação
-
-A documentação técnica está em `source-docs.zip`: arquitetura, importação do CRIS e checklist de testes manuais.
+A biblioteca compartilhada fica nos metadados da cena atual do Owlbear. Cada Token guarda somente o identificador da ficha vinculada. O cache IndexedDB é local ao navegador e serve como contingência offline. O painel não armazena documentos completos nos metadados da sala.
 
 ## Referências
 
 - [Documentação oficial do Owlbear Rodeo](https://docs.owlbear.rodeo/extensions/)
-- [SDK oficial do Owlbear Rodeo](https://github.com/owlbear-rodeo/sdk)
+- [Referência do manifesto](https://docs.owlbear.rodeo/extensions/reference/manifest/)
 - [C.R.I.S. — site oficial](https://crisordemparanormal.com/)
-- [Projeto comunitário de visualização de fichas CRIS](https://github.com/LucasPennacchi/visualizador_de_fichas)
+- [Adaptador comunitário de dados CRIS](https://github.com/LucasPennacchi/visualizador_de_fichas)
