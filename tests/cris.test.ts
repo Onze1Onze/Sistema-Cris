@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { CrisLinkError, validateCrisUrl } from "../src/cris/crisClient";
-import { parseCharacterJson } from "../src/cris/crisParser";
+import { buildFirestoreDocumentUrl, connectCrisLink, CrisLinkError, validateCrisUrl } from "../src/cris/crisClient";
+import { parseCharacterJson, parseFirestoreCharacterDocument } from "../src/cris/crisParser";
 
 const sampleUrl = "https://crisordemparanormal.com/agente/AbC123";
 
@@ -78,5 +78,183 @@ describe("parseCharacterJson", () => {
   it("descarta retrato inseguro por HTTP", () => {
     const sheet = parseCharacterJson(JSON.stringify({ identity: { name: "Agente" }, portraitUrl: "http://image.example/p.png" }), "AbC123", sampleUrl);
     expect(sheet.portraitUrl).toBeUndefined();
+  });
+});
+
+
+function fsString(value: string) {
+  return { stringValue: value };
+}
+function fsInt(value: number) {
+  return { integerValue: String(value) };
+}
+function fsMap(fields: Record<string, unknown>) {
+  return { mapValue: { fields } };
+}
+function fsArray(values: unknown[]) {
+  return { arrayValue: { values } };
+}
+
+function firestoreCharacter() {
+  return {
+    name: fsString("Eleanor Hale"),
+    player: fsString("Jogador"),
+    backgroundName: fsString("Investigadora"),
+    className: fsString("Especialista"),
+    nex: fsString("45%"),
+    patent: fsString("Operadora"),
+    private: { booleanValue: false },
+    sheetPictureURL: fsString("https://cdn.example.test/eleanor.webp"),
+    description: fsMap({
+      physical: fsString("Cabelos escuros e casaco preto."),
+      history: fsString("Investigadora marcada pelo passado."),
+      personal: fsString("Reservada."),
+      goal: fsString("Encontrar a verdade."),
+      anotation: fsString("Não confia na Ordem."),
+    }),
+    attributes: fsMap({
+      dex: fsInt(3), str: fsInt(1), int: fsInt(4), pre: fsInt(2), con: fsInt(2),
+    }),
+    currentPv: fsInt(32), maxPv: fsInt(40),
+    currentPe: fsInt(15), maxPe: fsInt(20),
+    currentSan: fsInt(42), maxSan: fsInt(55),
+    movement: fsInt(9),
+    protectionDefense: fsInt(1),
+    bonusDefense: fsInt(2),
+    evade: fsInt(18),
+    block: fsInt(5),
+    resistances: fsString("Balístico 5"),
+    skills: fsArray([
+      fsMap({
+        name: fsString("Investigação"),
+        attribute: fsString("INT"),
+        trainingDegree: fsString("5"),
+        otherBonus: fsInt(2),
+      }),
+    ]),
+    attacks: fsArray([
+      fsMap({
+        name: fsString("Revólver"),
+        attackBonus: fsInt(8),
+        damage: fsString("2d6"),
+        criticalRange: fsInt(19),
+        criticalMult: fsInt(3),
+        range: fsString("Curto"),
+        skillUsed: fsString("Pontaria"),
+        damageType: fsString("Balístico"),
+      }),
+    ]),
+    inventory: fsArray([
+      fsMap({
+        name: fsString("Lanterna"),
+        itemType: fsString("misc"),
+        tag: fsString("Equipamento"),
+        slots: fsInt(1),
+        description: fsString("<p>Ilumina áreas escuras.</p>"),
+      }),
+      fsMap({
+        name: fsString("Colete"),
+        itemType: fsString("protection"),
+        slots: fsInt(2),
+        defense: fsInt(2),
+      }),
+    ]),
+    powers: fsArray([
+      fsMap({ name: fsString("Perito"), category: fsString("Classe"), description: fsString("<p>Especialista em um campo.</p>") }),
+    ]),
+    rituals: fsArray([
+      fsMap({ name: fsString("Ouvir os Sussurros"), circle: fsString("1º"), cost: fsString("2 PE"), description: fsString("Ouve ecos do Outro Lado.") }),
+    ]),
+    statsClass: fsString("Especialista"),
+    proficiencies: fsString("Armas simples"),
+    ritualsDc: fsInt(17),
+    currentLoad: fsInt(3),
+    maxLoad: fsInt(10),
+  };
+}
+
+function firestoreDocument(fields = firestoreCharacter()) {
+  return { name: "projects/cris-ordem-paranormal/databases/(default)/documents/characters/AbC123", fields };
+}
+
+describe("integração automática com Firestore do C.R.I.S.", () => {
+  it("monta o endpoint de leitura do documento por ID", () => {
+    const url = new URL(buildFirestoreDocumentUrl("AbC123"));
+    expect(url.hostname).toBe("firestore.googleapis.com");
+    expect(url.pathname).toBe("/v1/projects/cris-ordem-paranormal/databases/(default)/documents/characters/AbC123");
+    expect(url.searchParams.get("key")).toBeTruthy();
+  });
+
+  it("decodifica a ficha completa do Firestore para o dossiê", () => {
+    const sheet = parseFirestoreCharacterDocument(firestoreDocument(), "AbC123", sampleUrl, 9876);
+    expect(sheet.id).toBe("AbC123");
+    expect(sheet.identity.name).toBe("Eleanor Hale");
+    expect(sheet.identity.player).toBe("Jogador");
+    expect(sheet.identity.className).toBe("Especialista");
+    expect(sheet.identity.origin).toBe("Investigadora");
+    expect(sheet.identity.nex).toBe("45%");
+    expect(sheet.identity.rank).toBe("Operadora");
+    expect(sheet.portraitUrl).toBe("https://cdn.example.test/eleanor.webp");
+    expect(sheet.attributes).toEqual({ AGI: 3, FOR: 1, INT: 4, PRE: 2, VIG: 2 });
+    expect(sheet.resources).toEqual({
+      pv: { current: 32, max: 40 },
+      pe: { current: 15, max: 20 },
+      san: { current: 42, max: 55 },
+    });
+    expect(sheet.skills?.[0]).toMatchObject({ name: "Investigação", attribute: "INT", bonus: 7 });
+    expect(sheet.combat).toMatchObject({ defense: 16, dodge: 18, block: 5, movement: "9m" });
+    expect(sheet.combat?.attacks?.[0]).toMatchObject({
+      name: "Revólver", test: "Pontaria +8", damage: "2d6", critical: "19/x3", range: "Curto",
+    });
+    expect(sheet.inventory?.[0]).toMatchObject({ name: "Lanterna", category: "Equipamento", weight: "1 espaço(s)" });
+    expect(sheet.inventory?.[0].detail).toBe("Ilumina áreas escuras.");
+    expect(sheet.abilities?.[0].name).toBe("Perito");
+    expect(sheet.rituals?.[0].detail).toContain("Custo 2 PE");
+    expect(sheet.identity.appearance).toContain("Cabelos escuros");
+    expect(sheet.identity.description).toContain("Investigadora marcada pelo passado.");
+    expect(sheet.additional?.["DT de rituais"]).toBe(17);
+    expect(sheet.updatedAt).toBe(9876);
+  });
+
+  it("consulta o Firestore automaticamente sem solicitar JSON ao usuário", async () => {
+    let requestedUrl = "";
+    let requestedMethod = "";
+    const result = await connectCrisLink(
+      sampleUrl,
+      async (input, init) => {
+        requestedUrl = String(input);
+        requestedMethod = init?.method ?? "GET";
+        return new Response(JSON.stringify(firestoreDocument()), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      2468,
+    );
+    expect(requestedMethod).toBe("GET");
+    expect(new URL(requestedUrl).pathname).toContain("/documents/characters/AbC123");
+    expect(result.dataRead).toBe(true);
+    expect(result.sheet.identity.name).toBe("Eleanor Hale");
+    expect(result.sheet.updatedAt).toBe(2468);
+  });
+
+  it("bloqueia fichas explicitamente marcadas como privadas", () => {
+    const fields = firestoreCharacter();
+    fields.private = { booleanValue: true };
+    expect(() => parseFirestoreCharacterDocument(firestoreDocument(fields), "AbC123", sampleUrl)).toThrow("privada");
+  });
+
+  it("converte 404 em erro amigável de ficha não encontrada", async () => {
+    await expect(connectCrisLink(sampleUrl, async () => new Response("{}", { status: 404 })))
+      .rejects.toMatchObject({ code: "DOCUMENT_NOT_FOUND" });
+  });
+
+  it("não altera o conteúdo remoto: usa somente GET", async () => {
+    let method = "";
+    await connectCrisLink(sampleUrl, async (_input, init) => {
+      method = init?.method ?? "GET";
+      return new Response(JSON.stringify(firestoreDocument()), { status: 200 });
+    });
+    expect(method).toBe("GET");
   });
 });

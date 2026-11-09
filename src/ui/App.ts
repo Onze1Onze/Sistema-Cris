@@ -1,5 +1,4 @@
-import { connectCrisLink, validateCrisUrl } from "../cris/crisClient";
-import { parseCharacterJson } from "../cris/crisParser";
+import { connectCrisLink } from "../cris/crisClient";
 import type { CharacterSheet, CrisSheetReference, ResourceKey, TokenBinding } from "../cris/crisTypes";
 import { persistence } from "../storage/persistence";
 import OBR, { type SceneItem } from "../owlbear/obr";
@@ -81,7 +80,7 @@ function renderHeader(state: AppState): string {
     <div class="brand-copy"><div class="micro-label">ORDEM REALITAS // ARQUIVO DIGITAL</div><div class="brand-title">SISTEMA <b>C.R.I.S.</b></div></div>
     <div class="header-stamp"><span class="status-light"></span><span>${modeLabel}</span></div>
   </header>
-  <div class="subbar"><span>REGISTRO DE AGENTES</span><span>///</span><span>INTERFACE DE CAMPO v1.0</span></div>`;
+  <div class="subbar"><span>REGISTRO DE AGENTES</span><span>///</span><span>INTERFACE DE CAMPO v1.1</span></div>`;
 }
 
 function renderNavigation(active: ViewTab): string {
@@ -116,8 +115,11 @@ function renderAttributes(sheet: CharacterSheet): string {
 
 function renderSkills(sheet: CharacterSheet, limit?: number): string {
   const list = limit ? sheet.skills?.slice(0, limit) : sheet.skills;
-  if (!list?.length) return `<p class="muted-note">Nenhuma perícia importada.</p>`;
-  return `<div class="data-list">${list.map((skill) => `<div class="data-row"><span class="data-icon">⌁</span><div class="data-copy"><strong>${display(skill.name)}</strong><small>${display(skill.attribute, "ATRIBUTO N/D")}${skill.training ? ` · ${display(skill.training)}` : ""}</small></div><b class="data-value">${display(skill.bonus, "—")}</b></div>`).join("")}</div>`;
+  if (!list?.length) return `<p class="muted-note">Nenhuma perícia encontrada nesta ficha.</p>`;
+  return `<div class="data-list">${list.map((skill) => {
+    const bonus = typeof skill.bonus === "number" && skill.bonus > 0 ? `+${skill.bonus}` : display(skill.bonus, "—");
+    return `<div class="data-row"><span class="data-icon">⌁</span><div class="data-copy"><strong>${display(skill.name)}</strong><small>${display(skill.attribute, "ATRIBUTO N/D")}${skill.training ? ` · ${display(skill.training)}` : ""}</small></div><b class="data-value">${bonus}</b></div>`;
+  }).join("")}</div>`;
 }
 
 function renderInventory(sheet: CharacterSheet): string {
@@ -172,30 +174,24 @@ function renderGear(sheet: CharacterSheet): string {
 function renderSettings(state: AppState): string {
   const sheet = state.sheet;
   const reference = state.reference;
-  return `<section class="section-block"><div class="section-title"><span>09</span><h2>ORIGEM DO REGISTRO</h2><i></i></div>
-    <div class="source-box"><div class="source-status"><span class="status-light"></span><strong>LINK C.R.I.S. VALIDADO</strong></div>
-      <p>${display(reference?.url ?? state.binding?.sourceUrl)}</p>
-      <small>O endereço foi reconhecido. A leitura automática não está ativa porque não foi localizada uma API pública oficial documentada.</small>
+  const url = reference?.url ?? state.binding?.sourceUrl;
+  return `<section class="section-block"><div class="section-title"><span>09</span><h2>FONTE DOS DADOS</h2><i></i></div>
+    <div class="source-box"><div class="source-status"><span class="status-light"></span><strong>LEITURA AUTOMÁTICA DO C.R.I.S.</strong></div>
+      <p>${display(url)}</p>
+      <small>A ficha é consultada diretamente no Firestore público usado pelo C.R.I.S. O conteúdo é atualizado quando o Mestre abre o dossiê ou solicita uma nova sincronização.</small>
       <button class="button secondary full" data-action="open-source">ABRIR NO C.R.I.S. ↗</button>
+      ${state.role === "GM" ? `<button class="button primary full" data-action="refresh-sheet" ${state.busy ? "disabled" : ""}>ATUALIZAR FICHA AGORA</button>` : ""}
+      ${sheet ? `<p class="footnote">Última leitura: ${new Date(sheet.updatedAt).toLocaleString("pt-BR")}.</p>` : ""}
     </div></section>
     <section class="section-block"><div class="section-title"><span>10</span><h2>COMPARTILHAMENTO</h2><i></i></div>
-      <label class="toggle-row"><span><strong>Compartilhar dados com jogadores</strong><small>Quando ativo, a cópia importada é gravada na metadata sincronizada do Token.</small></span>
-        <input id="share-toggle" type="checkbox" ${state.shareWithPlayers ? "checked" : ""} ${state.role !== "GM" ? "disabled" : ""}><i></i></label>
-      ${state.role === "GM" ? `<button class="button secondary full" data-action="save-sharing">SALVAR PERMISSÃO DE VISUALIZAÇÃO</button>` : ""}
+      ${state.role === "GM" ? `<label class="toggle-row"><span><strong>Compartilhar dados com jogadores</strong><small>Grava uma cópia dos dados consultados na metadata sincronizada deste Token.</small></span>
+        <input id="share-toggle" type="checkbox" ${state.shareWithPlayers ? "checked" : ""}><i></i></label>
+        <button class="button secondary full" data-action="save-sharing">SALVAR PERMISSÃO DE VISUALIZAÇÃO</button>` :
+        `<p class="muted-note">${state.shareWithPlayers ? "O Mestre autorizou a visualização desta cópia da ficha." : "O Mestre não autorizou o compartilhamento dos dados desta ficha."}</p>`}
     </section>
-    <section class="section-block"><div class="section-title"><span>11</span><h2>IMPORTAR / SUBSTITUIR DADOS</h2><i></i></div>
-      ${state.role === "GM" ? `<label class="field-label" for="json-input">JSON NORMALIZADO DO SISTEMA C.R.I.S.</label>
-        <textarea id="json-input" class="json-input" spellcheck="false" placeholder='{
-  "identity": { "name": "Nome do agente", "className": "Ocultista", "nex": "35%" },
-  "attributes": { "AGI": 2, "FOR": 1, "INT": 4, "PRE": 3, "VIG": 2 },
-  "resources": { "pv": { "current": 21, "max": 30 } }
-}'></textarea>
-        <p class="helper-text">Formato de importação próprio do projeto. Não é um export oficial do C.R.I.S.</p>
-        <button class="button primary full" data-action="import-json">VALIDAR E SALVAR DADOS</button>` : `<p class="muted-note">Somente o Mestre pode importar, substituir ou remover dados.</p>`}
-    </section>
-    ${state.role === "GM" ? `<div class="action-stack"><button class="button secondary" data-action="recheck">REVALIDAR LINK</button><button class="button danger" data-action="unbind">DESVINCULAR TOKEN</button></div>` : ""}
-    ${sheet?.additional ? `<section class="section-block"><div class="section-title"><span>12</span><h2>INFORMAÇÕES ADICIONAIS</h2><i></i></div><pre class="additional-data">${escapeHtml(JSON.stringify(sheet.additional, null, 2))}</pre></section>` : ""}
-    ${sheet ? `<p class="footnote">Último arquivo importado: ${new Date(sheet.updatedAt).toLocaleString("pt-BR")}. O cache local não é sincronizado automaticamente entre dispositivos.</p>` : ""}`;
+    ${state.role === "GM" ? `<div class="action-stack"><button class="button danger" data-action="unbind">DESVINCULAR TOKEN</button></div>` : ""}
+    ${sheet?.additional && Object.keys(sheet.additional).length ? `<section class="section-block"><div class="section-title"><span>11</span><h2>INFORMAÇÕES ADICIONAIS</h2><i></i></div><pre class="additional-data">${escapeHtml(JSON.stringify(sheet.additional, null, 2))}</pre></section>` : ""}
+  `;
 }
 
 function renderSheetContent(state: AppState): string {
@@ -211,31 +207,25 @@ function renderSheetContent(state: AppState): string {
 
 function renderNoSnapshot(state: AppState): string {
   const url = state.reference?.url ?? state.binding?.sourceUrl;
+  const canView = state.role === "GM" || state.binding?.shareWithPlayers === true;
   return `<section class="connect-placeholder">
     <div class="cris-emblem"><span>✦</span><strong>C.R.I.S.</strong><small>ARQUIVO DE AGENTE</small></div>
-    <h1>${url ? "VÍNCULO REGISTRADO" : "CONECTE UMA FICHA"}</h1>
-    <p>${url ? "O endereço foi associado a este Token, mas os dados do personagem ainda não foram importados." : "Informe o link público da ficha para registrar o vínculo no Token selecionado."}</p>
-    ${state.role === "GM" ? renderLinkForm(state) : `<p class="helper-text">Apenas o Mestre pode cadastrar ou substituir vínculos. Dados detalhados só aparecem quando o compartilhamento foi autorizado.</p>`}
+    <h1>${url ? (canView ? "CONSULTA DA FICHA" : "ACESSO RESTRITO") : "CONECTE UMA FICHA"}</h1>
+    <p>${url
+      ? (canView ? "Não há uma cópia local disponível. Consulte novamente a ficha pública do C.R.I.S." : "O Mestre ainda não compartilhou os dados deste agente com os jogadores.")
+      : "Cole o link da ficha. O Sistema C.R.I.S. buscará automaticamente identidade, atributos, recursos, perícias, combate, equipamentos, poderes e rituais."}</p>
+    ${!url && state.role === "GM" ? renderLinkForm(state) : ""}
+    ${url && canView ? `<button class="button primary full" data-action="refresh-sheet" ${state.busy ? "disabled" : ""}>CONSULTAR FICHA AGORA</button>` : ""}
     ${url ? `<button class="button secondary full" data-action="open-source">ABRIR FICHA NO C.R.I.S. ↗</button>` : ""}
-    ${state.role === "GM" ? renderImportBox() : ""}
   </section>`;
-}
-
-function renderImportBox(): string {
-  return `<div class="import-box"><div class="micro-label">IMPORTAÇÃO MANUAL</div>
-    <label class="field-label" for="json-input">COLE OS DADOS NO FORMATO DO PROJETO</label>
-    <textarea id="json-input" class="json-input" spellcheck="false" placeholder='{"identity":{"name":"Nome do agente"},"attributes":{"AGI":2,"FOR":1,"INT":3,"PRE":2,"VIG":2}}'></textarea>
-    <p class="helper-text">Não é uma API nem um formato oficial do C.R.I.S. Consulte a documentação do projeto.</p>
-    <button class="button primary full" data-action="import-json">IMPORTAR DADOS</button>
-  </div>`;
 }
 
 function renderLinkForm(state: AppState): string {
   const existingUrl = state.binding?.sourceUrl ?? state.reference?.url ?? "";
   return `<form id="connect-form" class="connect-form">
     <label class="field-label" for="cris-url">LINK PÚBLICO DA FICHA</label>
-    <div class="input-row"><input id="cris-url" type="url" required autocomplete="url" placeholder="https://crisordemparanormal.com/agente/..." value="${escapeHtml(existingUrl)}"><button class="button primary" type="submit">${state.mode === "bind" ? "VINCULAR" : "VALIDAR"}</button></div>
-    <p class="helper-text">A validação confirma o domínio e o formato do link — não verifica a existência da ficha.</p>
+    <div class="input-row"><input id="cris-url" type="url" required autocomplete="url" placeholder="https://crisordemparanormal.com/agente/..." value="${escapeHtml(existingUrl)}"><button class="button primary" type="submit">${state.mode === "bind" ? "VINCULAR E CARREGAR" : "CONECTAR FICHA"}</button></div>
+    <p class="helper-text">Ao conectar, a extensão busca automaticamente os dados públicos da ficha e preenche o dossiê. Nenhum JSON manual é necessário.</p>
     ${state.mode !== "library" ? `<label class="toggle-row"><span><strong>Compartilhar com os jogadores</strong><small>Desativado por padrão. Só compartilhe se a mesa puder ver os dados.</small></span><input id="share-toggle" type="checkbox" ${state.shareWithPlayers ? "checked" : ""}><i></i></label>` : ""}
   </form>`;
 }
@@ -259,21 +249,21 @@ function renderLibrary(state: AppState): string {
   const cards = state.library.map((reference) => renderLibraryCard(reference, persistence.get(reference.id), state)).join("");
   return `<section class="connect-panel">
       <div class="connect-intro"><div class="cris-emblem"><span>✦</span><strong>C.R.I.S.</strong><small>CONEXÃO EXTERNA</small></div>
-        <div><div class="micro-label">PROTOCOLO DE ACESSO</div><h1>Conecte sua ficha do C.R.I.S.</h1><p>Registre o link público e associe o dossiê ao Token correspondente.</p></div>
+        <div><div class="micro-label">PROTOCOLO DE ACESSO</div><h1>Conecte sua ficha do C.R.I.S.</h1><p>Cole o link público. A extensão consulta e importa os dados automaticamente.</p></div>
       </div>
       ${state.role === "GM" ? renderLinkForm(state) : `<p class="muted-note">Apenas o Mestre pode cadastrar ou vincular fichas.</p>`}
     </section>
     <section class="section-block library-section"><div class="section-title"><span>01</span><h2>FICHAS DESTA SALA</h2><i></i><b>${state.library.length.toString().padStart(2, "0")}</b></div>
       ${cards ? `<div class="library-list">${cards}</div>` : `<div class="empty-state"><div class="empty-scroll">▤</div><strong>NENHUMA FICHA REGISTRADA</strong><p>Adicione um link do C.R.I.S. para iniciar o arquivo desta sala.</p></div>`}
     </section>
-    <div class="footnote privacy-note">ASSOCIAÇÕES DE TOKEN SÃO SALVAS NA CENA. O CONTEÚDO DETALHADO PERMANECE LOCAL, A MENOS QUE O MESTRE ATIVE O COMPARTILHAMENTO.</div>`;
+    <div class="footnote privacy-note">ASSOCIAÇÕES SÃO SALVAS NA CENA. OS DADOS SÃO CONSULTADOS DIRETAMENTE NO C.R.I.S.; O COMPARTILHAMENTO COM JOGADORES DEPENDE DA AUTORIZAÇÃO DO MESTRE.</div>`;
 }
 
 function renderApp(state: AppState): string {
   const title = state.mode === "library" ? "ARQUIVO DA SALA" : state.mode === "bind" ? "VINCULAR TOKEN" : "DOSSIÊ DO AGENTE";
   const header = renderHeader(state);
   const body = state.mode === "library" ? renderLibrary(state) : state.sheet ? `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title} ${state.token ? `// ${escapeHtml(state.token.name ?? "TOKEN")}` : ""}</div><h1>Ficha do Personagem</h1><p>Registro de campo associado ao C.R.I.S.</p></section>${renderNavigation(state.activeTab)}<main class="sheet-content">${renderSheetContent(state)}</main>` : `<section class="dossier-heading"><button class="text-back" data-action="back-library">← ARQUIVO DA SALA</button><div class="micro-label">${title}</div><h1>Vincular ficha ao Token</h1><p>${escapeHtml(state.token?.name ?? "Token selecionado")}</p></section><main class="sheet-content">${renderNoSnapshot(state)}</main>`;
-  return `<div class="app-shell">${header}<main class="content">${body}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.0.0 · ${state.role}</span></footer></div>`;
+  return `<div class="app-shell">${header}<main class="content">${body}${renderToast(state.toast)}</main><footer class="app-footer"><span>CRIS // OBR EXTENSION</span><span>V1.1.0 · ${state.role}</span></footer></div>`;
 }
 
 export class CrisApp {
@@ -316,19 +306,65 @@ export class CrisApp {
   private async reloadRoomData(): Promise<void> {
     const library = await getRoomLibrary();
     this.state.library = library.sheets;
-    if (this.state.tokenId) {
-      this.state.token = await getTokenById(this.state.tokenId);
-      this.state.binding = readTokenBinding(this.state.token);
-      if (this.state.binding) {
-        this.state.reference = this.state.library.find((entry) => entry.id === this.state.binding?.sheetId) ?? {
-          id: this.state.binding.sheetId,
-          url: this.state.binding.sourceUrl,
-          name: this.state.binding.displayName,
-          status: "link-only",
-          addedAt: this.state.binding.boundAt,
+    if (!this.state.tokenId) return;
+
+    this.state.token = await getTokenById(this.state.tokenId);
+    this.state.binding = readTokenBinding(this.state.token);
+    if (!this.state.binding) return;
+
+    const binding = this.state.binding;
+    const reference = this.state.library.find((entry) => entry.id === binding.sheetId) ?? {
+      id: binding.sheetId,
+      url: binding.sourceUrl,
+      name: binding.displayName || `Agente ${binding.sheetId.slice(0, 6)}`,
+      status: "link-only" as const,
+      addedAt: binding.boundAt,
+    };
+    this.state.reference = reference;
+
+    const canView = this.state.role === "GM" || binding.shareWithPlayers;
+    this.state.sheet = canView
+      ? (persistence.get(binding.sheetId) ?? binding.snapshot)
+      : undefined;
+    this.state.shareWithPlayers = binding.shareWithPlayers;
+
+    // O Mestre consulta a origem ao abrir o Token. Jogadores usam somente
+    // o snapshot que o Mestre autorizou a sincronizar na metadata do Token.
+    const shouldFetch = this.state.role === "GM" || (binding.shareWithPlayers && !this.state.sheet);
+    if (shouldFetch) {
+      const cached = this.state.sheet;
+      try {
+        const result = await connectCrisLink(binding.sourceUrl);
+        persistence.save(result.sheet);
+        this.state.sheet = result.sheet;
+        const updatedReference: CrisSheetReference = {
+          ...reference,
+          name: `Agente ${binding.sheetId.slice(0, 6)}`,
+          status: "imported",
+          updatedAt: result.sheet.updatedAt,
         };
-        this.state.sheet = persistence.get(this.state.binding.sheetId) ?? this.state.binding.snapshot;
-        this.state.shareWithPlayers = this.state.binding.shareWithPlayers;
+        this.state.reference = updatedReference;
+        if (this.state.role === "GM") {
+          await upsertRoomSheet(updatedReference);
+          if (binding.shareWithPlayers) {
+            await updateTokenSnapshot(this.state.tokenId, result.sheet, true);
+            this.state.binding = await this.getUpdatedBinding();
+          }
+          this.state.library = (await getRoomLibrary()).sheets;
+        }
+      } catch (error) {
+        if (cached) {
+          this.state.sheet = cached;
+          this.state.toast = {
+            message: "Não foi possível atualizar o C.R.I.S. Exibindo a última cópia disponível.",
+            kind: "warning",
+          };
+        } else {
+          this.state.toast = {
+            message: error instanceof Error ? error.message : "Não foi possível consultar esta ficha.",
+            kind: "error",
+          };
+        }
       }
     }
   }
@@ -356,28 +392,84 @@ export class CrisApp {
     this.setBusy(true);
     try {
       const result = await connectCrisLink(url);
-      const cached = persistence.get(result.link.id);
+      const sheet = result.sheet;
+      persistence.save(sheet);
+
+      // O nome real fica no cache local; a biblioteca sincronizada mantém um rótulo neutro.
       const reference: CrisSheetReference = {
         id: result.link.id,
         url: result.link.url,
-        // Metadados da cena são visíveis a todos; mantenha um rótulo neutro por padrão.
         name: `Agente ${result.link.id.slice(0, 6)}`,
-        status: cached ? "imported" : "link-only",
+        status: "imported",
         addedAt: Date.now(),
-        ...(cached ? { updatedAt: cached.updatedAt } : {}),
+        updatedAt: sheet.updatedAt,
       };
       await upsertRoomSheet(reference);
+
       this.state.reference = reference;
-      this.state.sheet = cached;
+      this.state.sheet = sheet;
       this.state.library = (await getRoomLibrary()).sheets;
+      this.state.activeTab = "overview";
+      this.state.mode = "token";
+
       if (this.state.tokenId) {
-        await bindTokenToSheet(this.state.tokenId, reference, this.state.shareWithPlayers, cached);
+        await bindTokenToSheet(this.state.tokenId, reference, this.state.shareWithPlayers, sheet);
         this.state.binding = await this.getUpdatedBinding();
         this.state.mode = "token";
       }
-      this.toast(result.message, "warning");
+      this.toast(result.message, "success");
     } catch (error) {
-      this.toast(error instanceof Error ? error.message : "Não foi possível validar o link.", "error");
+      this.toast(error instanceof Error ? error.message : "Não foi possível consultar a ficha do C.R.I.S.", "error");
+    } finally {
+      this.setBusy(false);
+    }
+  }
+
+  private async refreshCurrentSheet(): Promise<void> {
+    const reference = this.state.reference ?? (this.state.binding ? {
+      id: this.state.binding.sheetId,
+      url: this.state.binding.sourceUrl,
+      name: this.state.binding.displayName,
+      status: "link-only" as const,
+      addedAt: this.state.binding.boundAt,
+    } : undefined);
+    if (!reference) return this.toast("Nenhuma ficha está vinculada para atualizar.", "warning");
+    if (this.state.role === "PLAYER" && !this.state.binding?.shareWithPlayers) {
+      return this.toast("O Mestre não autorizou a visualização desta ficha.", "error");
+    }
+
+    const cached = this.state.sheet ?? persistence.get(reference.id);
+    this.setBusy(true);
+    try {
+      const result = await connectCrisLink(reference.url);
+      persistence.save(result.sheet);
+      const updatedReference: CrisSheetReference = {
+        ...reference,
+        name: `Agente ${reference.id.slice(0, 6)}`,
+        status: "imported",
+        updatedAt: result.sheet.updatedAt,
+      };
+
+      if (this.state.role === "GM") {
+        await upsertRoomSheet(updatedReference);
+        if (this.state.tokenId && this.state.binding) {
+          await updateTokenSnapshot(this.state.tokenId, result.sheet, this.state.shareWithPlayers);
+          this.state.binding = await this.getUpdatedBinding();
+        }
+        this.state.library = (await getRoomLibrary()).sheets;
+      }
+
+      this.state.reference = updatedReference;
+      this.state.sheet = result.sheet;
+      this.state.activeTab = "overview";
+      this.toast(result.message, "success");
+    } catch (error) {
+      if (cached) {
+        this.state.sheet = cached;
+        this.toast("A atualização falhou. A última versão salva continua disponível.", "warning");
+      } else {
+        this.toast(error instanceof Error ? error.message : "Não foi possível atualizar a ficha.", "error");
+      }
     } finally {
       this.setBusy(false);
     }
@@ -388,43 +480,7 @@ export class CrisApp {
     return readTokenBinding(await getTokenById(this.state.tokenId));
   }
 
-  private async importJson(): Promise<void> {
-    if (this.state.role !== "GM") return this.toast("Somente o Mestre pode importar os dados.", "error");
-    const textarea = this.root.querySelector<HTMLTextAreaElement>("#json-input");
-    const reference = this.state.reference ?? (this.state.binding ? {
-      id: this.state.binding.sheetId,
-      url: this.state.binding.sourceUrl,
-      name: this.state.binding.displayName,
-      status: "link-only" as const,
-      addedAt: this.state.binding.boundAt,
-    } : undefined);
-    if (!reference) return this.toast("Valide um link de ficha antes de importar os dados.", "warning");
-    if (!textarea?.value.trim()) return this.toast("Cole o JSON normalizado no campo de importação.", "warning");
-
-    try {
-      const sheet = parseCharacterJson(textarea.value, reference.id, reference.url);
-      persistence.save(sheet);
-      const updatedReference: CrisSheetReference = {
-        ...reference,
-        // Não propague a identidade pela metadata sincronizada sem consentimento.
-        name: reference.name || `Agente ${reference.id.slice(0, 6)}`,
-        status: "imported",
-        updatedAt: sheet.updatedAt,
-      };
-      await upsertRoomSheet(updatedReference);
-      if (this.state.tokenId && this.state.binding) {
-        await updateTokenSnapshot(this.state.tokenId, sheet, this.state.shareWithPlayers);
-        this.state.binding = await this.getUpdatedBinding();
-      }
-      this.state.reference = updatedReference;
-      this.state.sheet = sheet;
-      this.state.library = (await getRoomLibrary()).sheets;
-      this.state.activeTab = "overview";
-      this.toast("Dados importados e armazenados no cache local.", "success");
-    } catch (error) {
-      this.toast(error instanceof Error ? error.message : "Não foi possível importar os dados.", "error");
-    }
-  }
+  private async handleClick(event: Event): Promise<void> {
 
   private async handleClick(event: Event): Promise<void> {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-action],button[data-tab]");
@@ -447,6 +503,7 @@ export class CrisApp {
           this.state.tokenId = undefined;
           this.state.binding = undefined;
           this.state.activeTab = "overview";
+          if (this.state.role === "GM") await this.refreshCurrentSheet();
           this.render();
           break;
         }
@@ -456,13 +513,14 @@ export class CrisApp {
           if (selected.length !== 1) return this.toast("Selecione exatamente um Token na camada de personagens.", "warning");
           const reference = this.state.library.find((entry) => entry.id === sheetId);
           if (!reference) return;
-          const sheet = persistence.get(sheetId);
+          const sheet = persistence.get(sheetId) ?? (await connectCrisLink(reference.url)).sheet;
+          persistence.save(sheet);
           await bindTokenToSheet(selected[0].id, reference, false, sheet);
           this.toast(`Ficha associada ao Token ${selected[0].name ?? "selecionado"}.`, "success");
           break;
         }
-        case "import-json":
-          await this.importJson();
+        case "refresh-sheet":
+          await this.refreshCurrentSheet();
           break;
         case "remove-sheet": {
           if (!sheetId || this.state.role !== "GM") return;
@@ -488,7 +546,7 @@ export class CrisApp {
           break;
         }
         case "save-sharing": {
-          if (!this.state.tokenId || !this.state.sheet) return this.toast("Importe os dados e abra a ficha pelo Token antes de alterar o compartilhamento.", "warning");
+          if (!this.state.tokenId || !this.state.sheet) return this.toast("Abra um Token com ficha vinculada antes de alterar o compartilhamento.", "warning");
           const checkbox = this.root.querySelector<HTMLInputElement>("#share-toggle");
           this.state.shareWithPlayers = checkbox?.checked ?? false;
           await updateTokenSnapshot(this.state.tokenId, this.state.sheet, this.state.shareWithPlayers);
@@ -497,10 +555,7 @@ export class CrisApp {
           break;
         }
         case "recheck": {
-          const url = this.state.reference?.url ?? this.state.binding?.sourceUrl;
-          if (!url) return;
-          validateCrisUrl(url);
-          this.toast("O formato do link continua válido. A leitura remota não está disponível nesta versão.", "warning");
+          await this.refreshCurrentSheet();
           break;
         }
         case "unbind": {
@@ -539,10 +594,16 @@ export class CrisApp {
 
   private setBusy(busy: boolean): void {
     this.state.busy = busy;
-    const button = this.root.querySelector<HTMLButtonElement>('#connect-form button[type="submit"]');
+    const button = this.root.querySelector<HTMLButtonElement>(
+      '#connect-form button[type="submit"], button[data-action="refresh-sheet"]',
+    );
     if (button) {
       button.disabled = busy;
-      button.textContent = busy ? "VALIDANDO..." : this.state.mode === "bind" ? "VINCULAR" : "VALIDAR";
+      button.textContent = busy
+        ? "CONSULTANDO..."
+        : button.dataset.action === "refresh-sheet"
+          ? "ATUALIZAR FICHA AGORA"
+          : this.state.mode === "bind" ? "VINCULAR E CARREGAR" : "CONECTAR FICHA";
     }
   }
 }

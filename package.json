@@ -1,9 +1,9 @@
 {
   "name": "sistema-cris",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
-  "description": "Extensão do Owlbear Rodeo para organizar vínculos de Tokens com fichas públicas do C.R.I.S.",
+  "description": "Extensão do Owlbear Rodeo para consultar automaticamente fichas públicas do C.R.I.S. e associá-las a Tokens.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",

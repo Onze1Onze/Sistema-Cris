@@ -1,153 +1,139 @@
-# Sistema C.R.I.S. — extensão para Owlbear Rodeo
+# Sistema C.R.I.S. — extensão automática para Owlbear Rodeo
 
-Extensão vertical de consulta que registra links de fichas C.R.I.S., permite associá-los a Tokens da cena e apresenta um dossiê compacto dentro do Owlbear Rodeo.
-
-> **Limite importante da integração:** na verificação realizada em 9 de novembro de 2026, não foi localizada documentação oficial pública de uma API do C.R.I.S. que permita consultar fichas de terceiros. Por isso, esta versão **não faz leitura automática do conteúdo remoto**. Ela valida o formato do link e permite importar dados em um JSON normalizado próprio do projeto. O link validado não comprova que a ficha exista, esteja pública ou possa ser lida por outra aplicação.
-
-A extensão não usa rotas internas não documentadas, scraping da interface, proxy de terceiros, login, cookies, tokens ou mecanismos para contornar autenticação/CORS. A importação manual é uma ponte transparente até que exista uma integração oficial documentada.
-
-## Funcionalidades
-
-- Action própria no Owlbear Rodeo para abrir o painel principal.
-- Menu contextual no Token para abrir o dossiê ou vincular/substituir uma ficha.
-- Validação de HTTPS, domínio e rota pública conhecida `/agente/{id}` do C.R.I.S.
-- Biblioteca de múltiplas fichas por sala.
-- Associação de fichas a Tokens por metadata namespaced do Owlbear.
-- Metadata da cena/Token sincronizada pelo Owlbear, sem guardar o conteúdo completo por padrão.
-- Cache local no navegador para os dados importados.
-- Importação manual de JSON normalizado, com campos opcionais e preservação de dados adicionais.
-- Compartilhamento opcional dos dados importados no Token, desligado por padrão.
-- Desvincular um Token ou remover uma ficha da sala (removendo também seus vínculos).
-- Interface vertical, responsiva, com abas de personagem, combate, perícias, equipamento e configurações.
-- Testes unitários de validação de URL e parser.
+Extensão vertical para consultar fichas públicas do C.R.I.S. diretamente dentro do Owlbear Rodeo. O fluxo é: cole o link de uma ficha, conecte, e o Sistema C.R.I.S. busca os dados do personagem e preenche o dossiê. Não é necessário copiar ou importar JSON manualmente.
 
 ## Instalação no Owlbear Rodeo
 
-O endereço do manifesto após publicar no GitHub Pages será:
+O endereço do manifesto publicado é:
 
 `https://onze1onze.github.io/Sistema-Cris/manifest.json`
 
-1. Abra ou entre em uma sala no Owlbear Rodeo.
-2. Acesse a área de Extensions / Extensões.
-3. Adicione uma extensão por URL e cole o endereço do manifesto acima.
+1. Abra uma sala no Owlbear Rodeo.
+2. Entre em Extensions / Extensões e escolha adicionar por URL.
+3. Cole o endereço do manifesto acima.
 4. Abra a Action **Sistema C.R.I.S.** na barra da sala.
-5. Para consultar um Token, abra o menu contextual dele e escolha **Abrir ficha C.R.I.S.**.
-6. Para associar uma ficha, use **Vincular / substituir ficha C.R.I.S.** no menu contextual, ou selecione um Token e use o botão **VINCULAR** na biblioteca.
+5. Cole o link público de uma ficha, por exemplo `https://crisordemparanormal.com/agente/ID_DA_FICHA`.
+6. Clique em **CONECTAR FICHA**. A extensão consulta os dados públicos e abre o dossiê automaticamente.
+7. Para associar ao Token, selecione um Token e use **VINCULAR / SUBSTITUIR FICHA C.R.I.S.** no menu contextual, ou abra a ficha já cadastrada e escolha **VINCULAR**.
+8. Ao clicar no Token depois, a ficha vinculada será carregada dentro do Owlbear.
 
-O manifesto é servido na raiz pública do GitHub Pages do repositório `Sistema-Cris`. Se o nome do repositório ou o proprietário mudar, atualize `base` em `vite.config.ts`, os caminhos em `src/owlbear/contextMenu.ts` e o endereço no manifesto/README.
+## O que é importado
 
-## Cadastrar e vincular uma ficha
+Quando o documento remoto oferece os campos, a extensão apresenta:
 
-1. Abra **Sistema C.R.I.S.**.
-2. Cole o link HTTPS de uma ficha pública do C.R.I.S. no formato `https://crisordemparanormal.com/agente/ID`.
-3. Clique em **VALIDAR** ou abra a opção de vínculo pelo menu do Token.
-4. O sistema confirma somente o domínio, a rota e o formato do identificador. A extensão não faz uma consulta ao servidor do C.R.I.S. nesta versão.
-5. Para apresentar atributos, recursos, perícias, combate e inventário, importe os dados normalizados na área **IMPORTAÇÃO MANUAL** / aba **ARQUIVO**.
+- Identidade: nome, jogador, origem, classe, NEX, patente, idade, descrição física, histórico, personalidade, objetivo e anotações.
+- Retrato do personagem, quando existe uma URL HTTPS válida.
+- Atributos: AGI, FOR, INT, PRE e VIG.
+- Recursos: PV, PE e SAN, sempre no formato atual / máximo.
+- Perícias, atributo, grau de treinamento e bônus.
+- Combate: defesa, esquiva, bloqueio, deslocamento, iniciativa, resistências e ataques, com teste, dano, crítico, alcance e tipo.
+- Inventário: nome, categoria, espaços/peso e descrição.
+- Poderes/habilidades e rituais, com detalhes quando disponíveis.
+- Informações adicionais reconhecidas no documento, sem inventar campos ausentes.
 
-## Formato de importação
+A extensão só apresenta valores recebidos. Se o documento não possuir um campo, ele fica ausente ou aparece como não informado. Não calculamos ataques ou habilidades que não estejam no documento remoto, exceto a defesa derivada dos atributos e modificadores básicos quando o valor de defesa não vem explicitamente.
 
-O JSON abaixo é um **formato interno do Sistema C.R.I.S.**, e não um formato de exportação oficial do C.R.I.S. A ficha precisa ter `identity.name`; os demais campos são opcionais. O ID é sempre derivado do link previamente validado, nunca do JSON importado.
+## Como funciona a leitura automática
 
-    {
-      "identity": {
-        "name": "Eleanor Hale",
-        "player": "Jogadora",
-        "origin": "Investigadora",
-        "className": "Especialista",
-        "nex": "35%",
-        "rank": "Operadora",
-        "age": "27",
-        "appearance": "Descrição física",
-        "description": "Descrição do personagem"
-      },
-      "attributes": { "AGI": 3, "FOR": 1, "INT": 4, "PRE": 2, "VIG": 2 },
-      "resources": {
-        "pv": { "current": 21, "max": 30 },
-        "pe": { "current": 8, "max": 12 },
-        "san": { "current": 35, "max": 40 }
-      },
-      "skills": [
-        { "name": "Investigação", "attribute": "INT", "bonus": 8, "training": "Treinado" }
-      ],
-      "combat": {
-        "defense": 16,
-        "dodge": 20,
-        "block": 5,
-        "initiative": 8,
-        "movement": "9m",
-        "resistances": ["Balístico 5"],
-        "attacks": [
-          { "name": "Revólver", "test": "Pontaria +8", "damage": "2d6", "critical": "19/x3", "range": "Curto", "effects": "—" }
-        ]
-      },
-      "inventory": [
-        { "name": "Kit médico", "category": "Equipamento", "quantity": 2, "weight": "1 espaço", "detail": "Uso de primeiros socorros" }
-      ],
-      "abilities": [ { "name": "Perito", "category": "Origem", "detail": "Descrição" } ],
-      "rituals": [ { "name": "Ouvir os Sussurros", "category": "Conhecimento", "detail": "Descrição" } ],
-      "additional": { "campoNaoMapeado": "Este conteúdo é preservado" }
-    }
+O link público de uma ficha usa o padrão `/agente/{id}`. A extensão extrai esse ID e faz uma requisição somente de leitura (HTTP GET) ao documento Firestore correspondente:
 
-A extensão não inventa perícias, recursos, ataques ou habilidades: apresenta apenas os campos fornecidos. Para atualizar os dados, substitua o JSON pela versão atual e importe novamente. O botão de revalidar verifica novamente a sintaxe do link, não baixa a ficha.
+`https://firestore.googleapis.com/v1/projects/cris-ordem-paranormal/databases/(default)/documents/characters/{id}`
 
-## Persistência, cache e multiplayer
+A resposta do Firestore usa valores tipados (`stringValue`, `integerValue`, `mapValue`, `arrayValue`, etc.). O parser decodifica esses valores recursivamente e converte os campos conhecidos para o modelo visual da extensão.
 
-- **Vínculo:** ID e URL da ficha são guardados na metadata namespaced do Token.
-- **Biblioteca:** referências de links são guardadas na metadata da cena atual.
-- **Sincronização:** metadata de cena e de Token é sincronizada pelo Owlbear com os participantes da sala.
-- **Cache:** os dados detalhados importados são armazenados no `localStorage` deste navegador. O cache não é sincronizado entre dispositivos e não deve ser usado como mecanismo de permissão.
-- **Privacidade:** por padrão, somente URL e identificadores técnicos são enviados à metadata compartilhada. O nome e o conteúdo detalhado não são propagados. O Mestre pode ativar explicitamente **Compartilhar dados com jogadores** para gravar uma cópia do JSON normalizado na metadata do Token.
-- **Acesso:** operações de cadastro, importação, vinculação, remoção e alteração de compartilhamento são restritas ao Mestre. Jogadores podem visualizar somente snapshots que o Mestre tenha compartilhado.
-- **Remoção:** remover uma ficha da biblioteca também desvincula os Tokens da sala que apontam para aquele registro.
+### Importante sobre a API
 
-Metadata sincronizada em uma sala é visível aos participantes conforme as permissões do Owlbear. Não use a opção de compartilhamento para informações que devam permanecer secretas. A extensão não é um cofre de segredos.
+O C.R.I.S. não forneceu, nesta implementação, uma especificação oficial/documentada que garanta este endpoint como API pública estável para terceiros. A rota Firestore foi identificada em integrações comunitárias públicas que também consultam a coleção `characters` do projeto Firebase do C.R.I.S.:
 
-## Limitações conhecidas
+- [Adaptador público do visualizador comunitário](https://github.com/LucasPennacchi/visualizador_de_fichas/blob/main/services/servico-poller/adapters/crisAdapter.js)
+- [Overlay comunitário que consulta o mesmo documento](https://github.com/VizzottoNCF/CRIS-Overlay/blob/main/stats.js)
+- [Outro importador comunitário com mapeamento de campos](https://github.com/ferreis/paranormal-rpg-sheet-flutter/blob/main/lib/features/characters/data/services/cris_import_service.dart)
 
-- Não existe neste projeto uma API pública oficial do C.R.I.S. verificada/documentada para leitura de fichas.
-- Validar um link não permite distinguir ficha inexistente, privada ou removida; isso só poderá ser confirmado por um mecanismo oficial de consulta.
-- Não há sincronização automática dos dados com o C.R.I.S. O Mestre precisa importar novamente os dados quando a ficha mudar.
-- O esquema JSON desta extensão é próprio. Ele não deve ser confundido com o formato interno do site ou com um endpoint do C.R.I.S.
-- A extensão não grava PV, PE, SAN ou alterações de volta no C.R.I.S.
-- A opção de compartilhamento copia dados para metadata sincronizada dos Tokens; controle cuidadosamente o que está sendo compartilhado.
+Portanto, esta é uma **integração direta com o documento Firestore observado em clientes comunitários**, e não uma API oficial garantida pelo C.R.I.S. O nome da coleção, as regras de leitura e o formato dos documentos podem mudar sem aviso. A extensão não usa scraping da interface, endpoint privado do frontend, cookies, senha, sessão de usuário, proxy de terceiros ou métodos para contornar autenticação/CORS.
+
+O identificador Firebase incluído no cliente é uma chave pública de aplicação encontrada em implementações públicas do cliente web/importador; não é uma senha nem um token de sessão. A permissão efetiva de leitura continua sendo controlada pelas regras do Firestore. O projeto não tenta ler documentos que o Firestore recusa.
+
+### Fichas privadas e erros
+
+A extensão respeita os sinais de privacidade disponíveis:
+
+- Se o documento tiver o campo `private: true`, a importação é recusada.
+- Se o Firestore responder 401/403, a extensão informa que a leitura foi negada.
+- Se responder 404, a ficha é informada como inexistente, removida ou indisponível publicamente.
+- Se houver timeout, indisponibilidade do serviço, resposta malformada ou bloqueio CORS, a extensão apresenta uma mensagem amigável.
+- Se já houver dados em cache, a última cópia continua disponível quando a atualização falhar.
+
+Validar o formato do link, por si só, não prova que a ficha existe ou está pública.
+
+## Vinculação por Token
+
+Cada Token recebe metadata namespaced em:
+
+`com.onze1onze.sistema-cris/binding`
+
+A associação armazena o ID e a URL de origem, a data de vínculo e a configuração de compartilhamento. A biblioteca de fichas da sala fica na metadata da cena. A metadata do Owlbear é sincronizada pelos participantes da sala.
+
+É possível associar fichas diferentes a Tokens diferentes, substituir a ficha, abrir a ficha pelo menu contextual ou remover o vínculo sem alterar o conteúdo do C.R.I.S.
+
+## Multiplayer e privacidade
+
+O comportamento padrão é restritivo:
+
+- O Mestre pode conectar, atualizar, remover e vincular fichas.
+- O Mestre sempre consulta a origem quando abre o Token associado.
+- Os dados detalhados ficam no cache local do navegador do Mestre.
+- **Compartilhar dados com jogadores** fica desligado por padrão.
+- Quando o Mestre ativa essa opção, uma cópia normalizada da ficha é gravada na metadata do Token para os jogadores da sala.
+- Jogadores veem apenas um snapshot compartilhado pelo Mestre. Sem autorização, a extensão não mostra os dados detalhados.
+- Desativar o compartilhamento remove a cópia detalhada da metadata do Token.
+
+A metadata sincronizada da sala é visível a participantes com acesso à cena. Não compartilhe fichas com informação que deva permanecer secreta. O botão de compartilhar é uma autorização explícita do Mestre, não um cofre de dados.
+
+## Cache e atualização
+
+- O cache local usa o armazenamento do navegador e evita perder a última cópia quando o Firestore está indisponível.
+- Ao abrir um Token vinculado como Mestre, a extensão busca uma versão atualizada.
+- O botão **ATUALIZAR FICHA AGORA** executa uma nova leitura.
+- A extensão não faz polling contínuo nem consulta a cada frame.
+- A extensão não altera PV, PE, SAN, itens ou qualquer outro dado no C.R.I.S. A sincronização é somente de leitura.
 
 ## Desenvolvimento local
 
-Requisitos: Node.js 22 ou superior e npm.
+Requisitos: Node.js 22+ e npm.
 
-1. Clone `https://github.com/Onze1Onze/Sistema-Cris.git`.
-2. Instale dependências: `npm install`.
-3. Inicie o Vite: `npm run dev`.
-4. Execute testes: `npm test`.
-5. Verifique TypeScript: `npm run typecheck`.
-6. Gere a extensão: `npm run build`.
-7. O resultado ficará na pasta `dist/`.
+```bash
+git clone https://github.com/Onze1Onze/Sistema-Cris.git
+cd Sistema-Cris
+npm install
+npm run dev
+npm test
+npm run typecheck
+npm run build
+```
 
-A Action do Owlbear deve apontar para uma URL pública servida por HTTPS. Para desenvolvimento, use uma URL HTTPS de preview/túnel ou um deploy de teste; o endereço local `localhost` não estará disponível para os demais participantes.
+O build fica em `dist/`. Para testar no Owlbear, sirva o manifesto por HTTPS (por exemplo, usando um deploy de preview). O endereço local `localhost` não fica acessível aos outros participantes.
 
-## Build e publicação
+## Publicação
 
-O workflow `.github/workflows/deploy.yml` executa instalação, TypeScript, testes e build em cada push para `main`. Em pushes e execuções manuais, publica `dist/` usando GitHub Pages Actions.
+O workflow `.github/workflows/deploy.yml` executa instalação, typecheck, testes e build a cada push em `main`, e publica `dist/` no GitHub Pages. A origem do Pages deve estar configurada como **GitHub Actions** em **Settings → Pages**.
 
-Para habilitar Pages, abra **Settings → Pages** no GitHub e selecione **GitHub Actions** como fonte de publicação, caso o Pages ainda não esteja configurado. Depois acompanhe a execução na aba **Actions**. Quando o deploy terminar com sucesso, abra `https://onze1onze.github.io/Sistema-Cris/manifest.json` para confirmar que o manifesto está acessível.
+Manifesto publicado: `https://onze1onze.github.io/Sistema-Cris/manifest.json`.
 
-## Estrutura
+## Estrutura do projeto
 
-- `src/cris/`: validação do link, tipos e parser JSON.
-- `src/owlbear/`: adaptador do SDK, metadata, vinculação e menu contextual.
-- `src/storage/`: cache privado local.
-- `src/ui/`: interface e fluxo da aplicação.
+- `src/cris/crisClient.ts`: valida link, consulta o documento Firestore e trata erros de rede.
+- `src/cris/crisParser.ts`: decodifica o formato tipado do Firestore e normaliza a ficha.
+- `src/cris/crisTypes.ts`: tipos dos dados exibidos.
+- `src/owlbear/`: integração SDK, metadata, menu contextual e vínculo com Tokens.
+- `src/storage/`: cache local.
+- `src/ui/`: interface vertical.
 - `src/styles/`: identidade visual responsiva.
-- `tests/`: testes unitários.
-- `public/manifest.json`: manifesto para o Owlbear Rodeo.
-- `public/icon.svg`: ícone original da extensão.
-- `.github/workflows/deploy.yml`: CI e deploy.
+- `tests/`: testes de URL, parser, integração simulada com Firestore e persistência.
 
-## Referências oficiais e integração
+## Referências
 
-- Owlbear Rodeo Extensions: https://docs.owlbear.rodeo/extensions/
-- Owlbear Rodeo Manifest: https://docs.owlbear.rodeo/extensions/reference/manifest/
-- Owlbear Rodeo SDK: https://www.npmjs.com/package/@owlbear-rodeo/sdk
-- C.R.I.S.: https://crisordemparanormal.com/
+- [C.R.I.S. — site](https://crisordemparanormal.com/)
+- [Owlbear Rodeo Extensions](https://docs.owlbear.rodeo/extensions/)
+- [Owlbear Rodeo Manifest](https://docs.owlbear.rodeo/extensions/reference/manifest/)
+- [SDK Owlbear Rodeo](https://www.npmjs.com/package/@owlbear-rodeo/sdk)
 
-A integração automatizada só deve ser ativada quando o C.R.I.S. oferecer ou documentar um método permitido de acesso externo. Até lá, o projeto preserva a transparência da limitação e evita depender de APIs privadas não verificadas.
